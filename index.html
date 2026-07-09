@@ -57,21 +57,41 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
-    // --- 核心修復：安全存儲包裝器 (safeStorage) ---
+    // --- 安全存儲包裝器 (safeStorage) ---
     // 解決沙盒環境 (Canvas) 阻擋 localStorage 導致的無聲崩潰問題
     const memoryStorage = {};
     const safeStorage = {
       getItem(key) {
-        try { return window.localStorage.getItem(key); }
-        catch (e) { return memoryStorage[key] || null; }
+        try { 
+          if (typeof window !== 'undefined' && window.localStorage) {
+            return window.localStorage.getItem(key); 
+          }
+        } catch (e) { 
+          console.warn("Storage access restricted, using memory storage instead.");
+        }
+        return memoryStorage[key] || null;
       },
       setItem(key, value) {
-        try { window.localStorage.setItem(key, value); }
-        catch (e) { memoryStorage[key] = String(value); }
+        try { 
+          if (typeof window !== 'undefined' && window.localStorage) {
+            window.localStorage.setItem(key, value); 
+            return;
+          }
+        } catch (e) { 
+          console.warn("Storage access restricted, using memory storage instead.");
+        }
+        memoryStorage[key] = String(value);
       },
       removeItem(key) {
-        try { window.localStorage.removeItem(key); }
-        catch (e) { delete memoryStorage[key]; }
+        try { 
+          if (typeof window !== 'undefined' && window.localStorage) {
+            window.localStorage.removeItem(key); 
+            return;
+          }
+        } catch (e) { 
+          console.warn("Storage access restricted, using memory storage instead.");
+        }
+        delete memoryStorage[key];
       }
     };
 
@@ -176,6 +196,34 @@
         setTimeout(() => setNotification(null), 3500);
       };
 
+      // 智慧 Firebase 設定解析器 (相容 JSON, 變數宣告, 單雙引號等各種格式)
+      // 已修復：使用普通字串構建正則表達式，防範 Babel standalone 編譯錯誤
+      const parseFirebaseConfig = (input) => {
+        const cleanInput = input.trim();
+        try {
+          return JSON.parse(cleanInput);
+        } catch (e) {
+          // 正則表達式動態提取常用金鑰，支持無引號、單引號、雙引號
+          const extract = (key) => {
+            const regex = new RegExp(key + '\\s*:\\s*["\'`]?([^"\'`\\\\\\s,]+)["\'`]?');
+            const match = cleanInput.match(regex);
+            return match ? match[1] : null;
+          };
+          const apiKey = extract('apiKey');
+          const authDomain = extract('authDomain');
+          const projectId = extract('projectId');
+          const storageBucket = extract('storageBucket');
+          const messagingSenderId = extract('messagingSenderId');
+          const appId = extract('appId');
+          const measurementId = extract('measurementId');
+
+          if (apiKey && projectId && appId) {
+            return { apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId, measurementId };
+          }
+        }
+        throw new Error("無法解析您的設定，請確認貼上的程式碼包含完整的 apiKey, projectId 與 appId！");
+      };
+
       // ----------------------------------------
       // 初始化加載與檢測
       // ----------------------------------------
@@ -278,13 +326,13 @@
         } else {
           // 本機存檔
           const dataToSave = { accounts, positions, transactions, savingsGoal };
-          safeStorage.setItem(`jubaopen_user_data_${currentUser.email || currentUser.displayName}`, JSON.stringify(dataToSave));
+          safeStorage.setItem(`jubaopen_user_data_${currentUser.displayName || currentUser.uid}`, JSON.stringify(dataToSave));
           setCloudSyncStatus('local');
         }
       }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser]);
 
       // ----------------------------------------
-      // 登入註冊核心邏輯（Try-Catch 防禦）
+      // 登入註冊核心邏輯
       // ----------------------------------------
       const handleAuthSubmit = async (e) => {
         e.preventDefault();
@@ -365,11 +413,11 @@
       };
 
       // 保存雲端 API 設定
-      const handleSaveSettings = (e) => {
+      const handleSaveSettings = async (e) => {
         e.preventDefault();
         const val = firebaseConfigInput.trim();
         
-        // 若清空輸入，則清除金鑰並無縫切回本機模式 (不再 reload 畫面)
+        // 若清空輸入，則清除金鑰並無縫切回本機模式
         if (!val) {
           safeStorage.removeItem('jubaopen_firebase_config');
           setIsFirebaseActive(false);
@@ -379,44 +427,27 @@
         }
 
         try {
-          // 清理可能貼上 const config = { ... } 等非標準格式
-          let cleanedVal = val;
-          if (val.includes('apiKey')) {
-            const extract = (key) => {
-              const match = val.match(new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`));
-              return match ? match[1] : null;
-            };
-            const apiKey = extract('apiKey');
-            const authDomain = extract('authDomain');
-            const projectId = extract('projectId');
-            const storageBucket = extract('storageBucket');
-            const messagingSenderId = extract('messagingSenderId');
-            const appId = extract('appId');
-            if (apiKey && projectId && appId) {
-              cleanedVal = JSON.stringify({ apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId });
-            }
-          }
-
-          const config = JSON.parse(cleanedVal);
-          if (!config.apiKey || !config.projectId) {
-            throw new Error("格式不完整：缺少 apiKey 或 projectId");
-          }
+          const config = parseFirebaseConfig(val);
+          safeStorage.setItem('jubaopen_firebase_config', JSON.stringify(config));
           
-          safeStorage.setItem('jubaopen_firebase_config', cleanedVal);
-          
-          // 無縫載入 Firebase 實例，不重整網頁
+          // 熱載入 Firebase 實例，如果已經初始化過則重新建立
           if (typeof firebase !== 'undefined') {
-            if (!firebase.apps.length) {
-              firebase.initializeApp(config);
+            if (firebase.apps.length > 0) {
+              try {
+                await firebase.app().delete();
+              } catch (appErr) {
+                console.warn("註銷舊 Firebase 失敗：", appErr);
+              }
             }
+            firebase.initializeApp(config);
           }
           
           setIsFirebaseActive(true);
           setShowSettingsModal(false);
-          triggerNotification('雲端同步功能配置成功！', 'success');
+          triggerNotification('雲端同步功能配置成功！✨', 'success');
         } catch (err) {
           console.error("Config Save Error:", err);
-          triggerNotification('設定失敗：格式不正確，請重新檢查', 'error');
+          triggerNotification('設定失敗：' + (err.message || '格式不正確，請重新檢查'), 'error');
         }
       };
 
@@ -585,10 +616,12 @@
       const handleAddTransaction = (e) => {
         e.preventDefault();
         const selAcc = accounts.find(a => a.id === txAccountId);
+        if (!selAcc) { triggerNotification('請選擇一個有效的帳戶！', 'error'); return; }
         const todayStr = new Date().toISOString().split('T')[0];
 
         if (txType === 'TRANSFER') {
           const toAcc = accounts.find(a => a.id === txTargetAccountId);
+          if (!toAcc) { triggerNotification('請選擇轉入帳戶！', 'error'); return; }
           const amt = parseFloat(txAmount);
           if (selAcc.balance < amt) { triggerNotification(`轉帳失敗：${selAcc.name} 帳戶餘額不足！`, 'error'); return; }
           const convRate = parseFloat(txPrice) || convertAmount(1, selAcc.currency, toAcc.currency);
@@ -652,7 +685,7 @@
       // ----------------------------------------
       if (!currentUser) {
         return (
-          <div className="min-h-screen bg-[#f9f8f6] text-stone-600 font-sans flex flex-col items-center justify-center p-4 antialiased animate-fade-in">
+          <div className="min-h-screen bg-[#f9f8f6] text-stone-600 font-sans flex flex-col items-center justify-center p-4 antialiased animate-fade-in relative">
             <div className="max-w-md w-full bg-white border border-stone-200/40 rounded-[32px] p-8 shadow-sm space-y-6 transition-all duration-300">
               
               <div className="text-center space-y-2 mb-4">
@@ -710,9 +743,18 @@
                       onChange={e => setFirebaseConfigInput(e.target.value)} 
                       className="w-full h-36 bg-stone-50 border rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none" 
                     />
-                    <p className="text-[10px] text-stone-400">※ 提示：不需手動修改程式碼，直接將您的 Firebase 金鑰代碼貼入上方即可。清空並更新則返回本機模式。※</p>
+                    <p className="text-[10px] text-stone-400 font-bold">※ 提示：不需手動修改程式碼，直接將您的 Firebase 金鑰代碼貼入上方即可。清空並更新則返回本機模式。※</p>
                     <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                   </form>
+                </div>
+              </div>
+            )}
+
+            {/* 核心修復：在登入畫面中同步渲染 Notification，使得錯誤提醒能被看見 */}
+            {notification && (
+              <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
+                <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
+                  <span>{notification.message}</span>
                 </div>
               </div>
             )}
@@ -887,7 +929,7 @@
                         <tbody>
                           {positionsAnalysis.list.map(pos => (
                             <tr key={pos.id} className="border-b border-slate-50 hover:bg-slate-50/20">
-                              <td className="py-3 px-4 font-bold"><div className="flex items-center gap-1.5"><span className="text-slate-800">{pos.symbol}</span><span className={`text-[8px] px-1.5 py-0.2 rounded font-semibold ${pos.market === 'US' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>{pos.market === 'US' ? '美' : '台'}</span></div><span className="text-[10px] text-slate-400 block font-normal truncate max-w-[120px]">{pos.name}</span></td>
+                              <td className="py-3 px-4 font-bold"><div className="flex items-center gap-1.5"><span className="text-slate-800">{pos.symbol}</span><span className={`text-[8px] px-1.5 py-0.5 rounded font-semibold ${pos.market === 'US' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>{pos.market === 'US' ? '美' : '台'}</span></div><span className="text-[10px] text-slate-400 block font-normal truncate max-w-[120px]">{pos.name}</span></td>
                               <td className="py-3 px-4 text-right font-medium">{pos.shares.toLocaleString()}</td>
                               <td className="py-3 px-4 text-right">{formatMoney(pos.avgCost, pos.market === 'US' ? 'USD' : 'TWD')}</td>
                               <td className="py-3 px-4 text-right font-bold text-slate-800">{formatMoney(pos.currentPrice, pos.market === 'US' ? 'USD' : 'TWD')}</td>
@@ -995,7 +1037,7 @@
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <input type="text" placeholder="代號如 2330" required value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
+                        <input type="text" placeholder="代號如 2330" required={txType !== 'DIVIDEND'} value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
                         <input type="text" placeholder="股票名稱" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
                         <button type="button" onClick={handleQueryStockPrice} className="w-1/3 bg-sky-200 text-sky-900 font-bold rounded-lg text-xs hover:bg-sky-300">查詢現價</button>
                       </div>
