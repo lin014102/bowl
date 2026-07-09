@@ -57,6 +57,24 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
+    // --- 核心修復：安全存儲包裝器 (safeStorage) ---
+    // 解決沙盒環境 (Canvas) 阻擋 localStorage 導致的無聲崩潰問題
+    const memoryStorage = {};
+    const safeStorage = {
+      getItem(key) {
+        try { return window.localStorage.getItem(key); }
+        catch (e) { return memoryStorage[key] || null; }
+      },
+      setItem(key, value) {
+        try { window.localStorage.setItem(key, value); }
+        catch (e) { memoryStorage[key] = String(value); }
+      },
+      removeItem(key) {
+        try { window.localStorage.removeItem(key); }
+        catch (e) { delete memoryStorage[key]; }
+      }
+    };
+
     const LOGO_URL = "https://raw.githubusercontent.com/lin014102/bowl/main/1783576564555.jpg";
 
     const FALLBACK_RATES = { TWD: 1.0, USD: 32.50, JPY: 0.205, EUR: 35.20 };
@@ -162,7 +180,7 @@
       // 初始化加載與檢測
       // ----------------------------------------
       useEffect(() => {
-        const savedConfigStr = localStorage.getItem('jubaopen_firebase_config');
+        const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
         if (savedConfigStr) {
           try {
             const config = JSON.parse(savedConfigStr);
@@ -178,7 +196,7 @@
           }
         }
 
-        const remembered = localStorage.getItem('jubaopen_remembered_user');
+        const remembered = safeStorage.getItem('jubaopen_remembered_user');
         if (remembered) {
           if (!savedConfigStr) {
             handleLoginUser(remembered, true);
@@ -223,8 +241,8 @@
             triggerNotification("☁️ 雲端同步完成，資產更新成功！", 'success');
           } else {
             // 自動移植本機舊資產
-            const legacyUser = usernameInput || localStorage.getItem('jubaopen_remembered_user');
-            const localLegacyData = localStorage.getItem(`jubaopen_user_data_${legacyUser}`);
+            const legacyUser = usernameInput || safeStorage.getItem('jubaopen_remembered_user');
+            const localLegacyData = safeStorage.getItem(`jubaopen_user_data_${legacyUser}`);
             if (localLegacyData) {
               const parsed = JSON.parse(localLegacyData);
               setAccounts(parsed.accounts || []);
@@ -260,7 +278,7 @@
         } else {
           // 本機存檔
           const dataToSave = { accounts, positions, transactions, savingsGoal };
-          localStorage.setItem(`jubaopen_user_data_${currentUser.email || currentUser.displayName}`, JSON.stringify(dataToSave));
+          safeStorage.setItem(`jubaopen_user_data_${currentUser.email || currentUser.displayName}`, JSON.stringify(dataToSave));
           setCloudSyncStatus('local');
         }
       }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser]);
@@ -289,14 +307,14 @@
             }
           } else {
             // 本機模式
-            const localUsers = JSON.parse(localStorage.getItem('jubaopen_local_users') || '{}');
+            const localUsers = JSON.parse(safeStorage.getItem('jubaopen_local_users') || '{}');
             if (authMode === 'register') {
               if (localUsers[username]) {
                 triggerNotification('此帳號已存在，請直接登入', 'error');
                 return;
               }
               localUsers[username] = password;
-              localStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
+              safeStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
               handleLoginUser(username, true);
               triggerNotification('本機帳號註冊成功！🎉', 'success');
             } else {
@@ -306,7 +324,7 @@
                 // 預設快速調試帳號
                 handleLoginUser('admin', true);
               } else {
-                triggerNotification('帳號或密碼輸入錯誤', 'error');
+                triggerNotification('帳號或密碼輸入錯誤，未註冊請先點選下方「註冊」', 'error');
               }
             }
           }
@@ -319,8 +337,8 @@
 
       const handleLoginUser = (username, remember) => {
         setCurrentUser({ uid: `local_${username}`, displayName: username });
-        if (remember) localStorage.setItem('jubaopen_remembered_user', username);
-        const userData = JSON.parse(localStorage.getItem(`jubaopen_user_data_${username}`));
+        if (remember) safeStorage.setItem('jubaopen_remembered_user', username);
+        const userData = JSON.parse(safeStorage.getItem(`jubaopen_user_data_${username}`));
         if (userData) {
           setAccounts(userData.accounts || []);
           setPositions(userData.positions || []);
@@ -339,7 +357,7 @@
       const handleLogout = () => {
         if (isFirebaseActive && typeof firebase !== 'undefined') firebase.auth().signOut();
         setCurrentUser(null);
-        localStorage.removeItem('jubaopen_remembered_user');
+        safeStorage.removeItem('jubaopen_remembered_user');
         setUsernameInput('');
         setPasswordInput('');
         setIsDataLoaded(false);
@@ -350,12 +368,13 @@
       const handleSaveSettings = (e) => {
         e.preventDefault();
         const val = firebaseConfigInput.trim();
+        
+        // 若清空輸入，則清除金鑰並無縫切回本機模式 (不再 reload 畫面)
         if (!val) {
-          localStorage.removeItem('jubaopen_firebase_config');
+          safeStorage.removeItem('jubaopen_firebase_config');
           setIsFirebaseActive(false);
           setShowSettingsModal(false);
           triggerNotification('已清除金鑰，切換回本機模式', 'success');
-          setTimeout(() => window.location.reload(), 1000);
           return;
         }
 
@@ -382,14 +401,22 @@
           if (!config.apiKey || !config.projectId) {
             throw new Error("格式不完整：缺少 apiKey 或 projectId");
           }
-          localStorage.setItem('jubaopen_firebase_config', cleanedVal);
+          
+          safeStorage.setItem('jubaopen_firebase_config', cleanedVal);
+          
+          // 無縫載入 Firebase 實例，不重整網頁
+          if (typeof firebase !== 'undefined') {
+            if (!firebase.apps.length) {
+              firebase.initializeApp(config);
+            }
+          }
+          
           setIsFirebaseActive(true);
           setShowSettingsModal(false);
-          triggerNotification('雲端同步功能配置成功！重整載入環境...', 'success');
-          setTimeout(() => window.location.reload(), 1500);
+          triggerNotification('雲端同步功能配置成功！', 'success');
         } catch (err) {
           console.error("Config Save Error:", err);
-          triggerNotification('設定失敗：JSON 格式不正確，請重新檢查複製格式', 'error');
+          triggerNotification('設定失敗：格式不正確，請重新檢查', 'error');
         }
       };
 
@@ -684,7 +711,7 @@
                       className="w-full h-36 bg-stone-50 border rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none" 
                     />
                     <p className="text-[10px] text-stone-400">※ 提示：不需手動修改程式碼，直接將您的 Firebase 金鑰代碼貼入上方即可。清空並更新則返回本機模式。※</p>
-                    <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定並載入</button>
+                    <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                   </form>
                 </div>
               </div>
@@ -942,7 +969,7 @@
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">
-                        {txType === 'INVENTORY' ? '庫存歸屬帳戶 (不會扣除此帳戶餘額)' : '帳戶'}
+                        {txType === 'INVENTORY' ? '庫存歸屬帳戶 (不會扣款)' : '帳戶'}
                       </label>
                       <select required value={txAccountId} onChange={e => setTxAccountId(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
                         <option value="">-- 選擇帳戶 --</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
@@ -1012,7 +1039,7 @@
                     className="w-full h-36 bg-stone-50 border rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none" 
                   />
                   <p className="text-[10px] text-stone-400">※ 提示：若想恢復為極速本機離線模式，請將上方輸入框清空後點擊更新即可。※</p>
-                  <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定並載入</button>
+                  <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                 </form>
               </div>
             </div>
