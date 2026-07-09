@@ -24,7 +24,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Firebase SDK Compat CDN (提供不依賴 NPM、前端直連雲端的最佳技術) -->
+  <!-- Firebase SDK Compat CDN -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
@@ -35,9 +35,12 @@
       background-color: #fcfdfe;
       -webkit-tap-highlight-color: transparent;
       user-select: none;
+      -webkit-user-select: none;
     }
-    input, select {
-      user-select: text;
+    /* 允許輸入元件進行點擊與文字選取輸入 */
+    input, select, textarea {
+      user-select: text !important;
+      -webkit-user-select: text !important;
     }
     .animate-fade-in {
       animation: fadeIn 0.3s ease-out forwards;
@@ -515,7 +518,7 @@
       // 總預估淨資產
       const netWorthTWD = totalCashTWD + positionsAnalysis.totalStockValueTWD;
 
-      // 圓餅圖莫蘭迪配色
+      // 圓餅圖莫蘭迪配置
       const assetAllocation = useMemo(() => {
         if (netWorthTWD === 0) return [];
         return [
@@ -550,10 +553,8 @@
         }
 
         if (isFirebaseActive) {
-          // 雲端 Firebase 登入與註冊
           setCloudSyncStatus('syncing');
           try {
-            // Firebase Auth 電子郵件格式包裝：若僅輸入帳號名，自動附贈後綴以便登入
             const email = username.includes('@') ? username : `${username}@jubaopen.com`;
             if (authMode === 'register') {
               await firebase.auth().createUserWithEmailAndPassword(email, password);
@@ -569,7 +570,6 @@
             setCloudSyncStatus('error');
           }
         } else {
-          // 本機隔離對帳模式
           const userDb = JSON.parse(localStorage.getItem('jubaopen_users') || '{}');
           if (authMode === 'register') {
             if (userDb[username]) {
@@ -803,19 +803,16 @@
         try {
           const text = firebaseConfigInput.trim();
           if (!text) {
-            // 清除設定 -> 回歸本地儲存
             localStorage.removeItem('jubaopen_firebase_config');
             triggerNotification("已關閉雲端，系統將重整並切換回本機對帳。");
             setTimeout(() => window.location.reload(), 1500);
             return;
           }
 
-          // 彈性解析貼入的 JSON 或 JS Object
           let parsed = null;
           try {
             parsed = JSON.parse(text);
           } catch (err) {
-            // 使用正則匹配，自動相容直接複製的 JS 代碼片段
             const apiKey = text.match(/apiKey:\s*["']([^"']+)["']/)?.[1];
             const authDomain = text.match(/authDomain:\s*["']([^"']+)["']/)?.[1];
             const projectId = text.match(/projectId:\s*["']([^"']+)["']/)?.[1];
@@ -839,7 +836,47 @@
         }
       };
 
-      // 登入前頁面 (莫蘭迪溫柔燕麥配色)
+      // 內部輔助函式：渲染雲端配置設定中心彈窗 (修正：宣告移至 App 內部閉包作用域中)
+      const renderCloudConfigModal = () => {
+        return (
+          <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white border border-stone-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl animate-fade-in text-left">
+              <div className="flex justify-between items-center border-b pb-2">
+                <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider flex items-center gap-1">
+                  <Icons.Cloud className="w-4 h-4 text-sky-400" />
+                  <span>聚寶盆 · 私人免費雲端同步設定</span>
+                </h3>
+                <button onClick={() => setShowCloudConfigModal(false)} className="text-stone-400 hover:text-stone-600">✕</button>
+              </div>
+              
+              <div className="text-[11px] text-stone-500 space-y-2 leading-relaxed">
+                <p className="font-bold text-stone-700">💡 只要簡單三步，建立您的永久免費、100% 安全雲端資料庫：</p>
+                <ol className="list-decimal list-inside space-y-1">
+                  <li>前往 <a href="https://console.firebase.google.com/" target="_blank" className="text-sky-500 font-bold underline">Firebase 主控台</a> 建立一個免費專案。</li>
+                  <li>在專案內新增 <strong>Web 應用程式</strong>，並啟用 <strong>Authentication</strong> (啟用電子郵件/密碼) 與 <strong>Cloud Firestore</strong> 資料庫 (選擇測試模式)。</li>
+                  <li>將生成的 <code className="bg-stone-50 p-0.5 rounded text-rose-500 font-mono">firebaseConfig</code> 設定物件代碼，貼在下方：</li>
+                </ol>
+              </div>
+
+              <form onSubmit={handleSaveFirebaseConfig} className="space-y-3">
+                <textarea
+                  placeholder={`{\n  apiKey: "AIzaSy...",\n  authDomain: "jubaopen...",\n  projectId: "jubaopen...",\n  appId: "1:..."\n}`}
+                  value={firebaseConfigInput}
+                  onChange={e => setFirebaseConfigInput(e.target.value)}
+                  className="w-full h-36 bg-stone-50 border border-stone-150 rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]"
+                />
+                <p className="text-[10px] text-stone-400">※ 提示：留空並提交儲存，即可關閉雲端，切換回原本的本機對帳。※</p>
+                <div className="flex justify-end gap-2 pt-2 border-t">
+                  <button type="button" onClick={() => setShowCloudConfigModal(false)} className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-xs font-bold rounded-xl text-slate-500">取消</button>
+                  <button type="submit" className="px-5 py-2 bg-[#9a8c7d] hover:bg-[#8d7f70] text-xs font-bold rounded-xl text-white">保存並重載 App</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      };
+
+      // 登入前頁面 (莫蘭迪溫柔燕麥配置)
       if (!currentUser) {
         return (
           <div className="min-h-screen bg-[#f9f8f6] text-stone-600 font-sans flex flex-col items-center justify-center p-4 antialiased animate-fade-in">
@@ -865,7 +902,7 @@
               <form onSubmit={handleAuthSubmit} className="space-y-4">
                 <div className="space-y-1">
                   <label className="text-[10px] text-stone-400 font-bold uppercase block">帳戶名稱</label>
-                  <input type="text" required placeholder={isFirebaseActive ? "請輸入雲端註冊帳號" : "請輸入帳號"} value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
+                  <input type="text" required placeholder={isFirebaseActive ? "請輸入雲端註冊信箱" : "請輸入帳號"} value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] text-stone-400 font-bold uppercase block">安全密碼</label>
@@ -892,16 +929,15 @@
               💡 <strong>iOS 行動教學：</strong>用 Safari 開啟此頁，點擊底部「分享」圖示並選擇「加入主畫面」，即可換上極美圖示享受滿版無框的聚寶對帳體驗！
             </div>
 
-            {/* 雲端金鑰彈窗 (在登入畫面亦可隨時啟用) */}
+            {/* 雲端金鑰彈窗 */}
             {showCloudConfigModal && renderCloudConfigModal()}
           </div>
         );
       }
 
-      // 登入後主頁面 (清爽冰川粉藍色調與 100% 自由編輯功能)
+      // 登入後主頁面 (溫柔冰川粉藍)
       return (
         <div className="min-h-screen bg-[#fcfdfe] text-slate-600 font-sans flex flex-col antialiased">
-          {/* 頂部柔和導覽列 */}
           <header className="sticky top-0 z-30 bg-[#f0f7ff]/90 backdrop-blur-md border-b border-sky-100 px-6 py-4 flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="w-9 h-9 rounded-2xl bg-sky-200 flex items-center justify-center shadow-sm overflow-hidden">
@@ -922,7 +958,7 @@
             </div>
 
             <div className="flex items-center space-x-3">
-              {/* 雲端即時同步狀態標籤 */}
+              {/* 雲端同步狀態標籤 */}
               <button onClick={() => setShowCloudConfigModal(true)} className="flex items-center">
                 {cloudSyncStatus === 'synced' && <span className="text-[10px] bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1">☁️ 雲端已同步</span>}
                 {cloudSyncStatus === 'syncing' && <span className="text-[10px] bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1 animate-pulse">☁️ 同步中...</span>}
@@ -963,7 +999,7 @@
           <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col lg:flex-row gap-8">
             <section className="w-full lg:w-[410px] shrink-0 space-y-6">
               
-              {/* 總預估淨資產卡片 (極致柔和冰川藍底色) */}
+              {/* 總預估淨資產卡片 */}
               <div className="relative overflow-hidden bg-gradient-to-br from-[#e0f2fe] to-[#e0f2fe]/40 border border-sky-100/60 rounded-[30px] p-6 text-slate-800 shadow-sm shadow-sky-100/30">
                 <span className="text-[10px] font-bold tracking-widest text-slate-400 uppercase">當前預估淨資產 (Net Worth)</span>
                 <h2 className="text-3xl font-extrabold tracking-tight text-slate-800 mt-2">
@@ -971,11 +1007,11 @@
                 </h2>
                 <div className="mt-6 pt-5 border-t border-sky-100/50 grid grid-cols-2 gap-4 text-xs">
                   <div>
-                    <p className="text-slate-400 font-semibold">可用資金存款</p>
+                    <p className="text-slate-400">可用資金存款</p>
                     <p className="font-extrabold text-slate-700 mt-0.5">{formatMoney(convertAmount(totalCashTWD, 'TWD', displayCurrency))}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400 font-semibold">持股投資市值</p>
+                    <p className="text-slate-400">持股投資市值</p>
                     <p className="font-extrabold text-slate-700 mt-0.5">{formatMoney(convertAmount(positionsAnalysis.totalStockValueTWD, 'TWD', displayCurrency))}</p>
                   </div>
                 </div>
@@ -985,27 +1021,7 @@
               <div className="bg-white border border-slate-100 rounded-[24px] p-5 shadow-sm space-y-4">
                 <div className="flex justify-between items-center text-xs font-semibold">
                   <span className="text-slate-700">目標進度 {((netWorthTWD / savingsGoal) * 100).toFixed(1)}%</span>
-                  {isEditingGoal ? (
-                    <div className="flex items-center space-x-1">
-                      <input 
-                        type="number" 
-                        value={tempGoal} 
-                        onChange={e => setTempGoal(e.target.value)} 
-                        className="w-24 px-2 py-0.5 bg-slate-50 border rounded-lg text-xs font-bold text-slate-700 focus:outline-none"
-                      />
-                      <button onClick={handleSaveGoal} className="text-emerald-500 font-black hover:text-emerald-600 px-1">✓</button>
-                      <button onClick={() => setIsEditingGoal(false)} className="text-rose-500 font-black hover:text-rose-600 px-1">✕</button>
-                    </div>
-                  ) : (
-                    <button 
-                      onClick={() => { setTempGoal(savingsGoal); setIsEditingGoal(true); }} 
-                      className="text-slate-400 hover:text-sky-500 flex items-center gap-1 transition-colors"
-                      title="點擊修改理財目標"
-                    >
-                      <span>目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}</span>
-                      <Icons.Edit className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  <span className="text-slate-400">目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}</span>
                 </div>
                 <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
                   <div className="h-full bg-sky-300 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, (netWorthTWD / savingsGoal) * 100)}%` }} />
@@ -1051,86 +1067,59 @@
 
               {/* 資產明細 */}
               {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fade-in">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <span className="text-xs text-slate-400 font-bold block">可用存款總計</span>
                     <p className="text-xl font-bold text-slate-800 mt-1">{formatMoney(convertAmount(totalCashTWD, 'TWD', displayCurrency))}</p>
-                    <button onClick={() => setActiveTab('accounts')} className="text-[10px] text-sky-500 mt-2 font-bold hover:underline block text-left">→ 管理儲蓄帳戶</button>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <span className="text-xs text-slate-400 font-bold block">股票市值總計</span>
                     <p className="text-xl font-bold text-slate-800 mt-1">{formatMoney(convertAmount(positionsAnalysis.totalStockValueTWD, 'TWD', displayCurrency))}</p>
-                    <button onClick={() => setActiveTab('positions')} className="text-[10px] text-sky-500 mt-2 font-bold hover:underline block text-left">→ 管理持股部位</button>
                   </div>
                 </div>
               )}
 
               {/* 帳戶管理 */}
               {activeTab === 'accounts' && (
-                <div className="space-y-4 animate-fade-in">
+                <div className="space-y-4">
                   <div className="flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶資產列表</h3>
-                    <button onClick={() => { setEditingAccount(null); setNewAccName(''); setNewAccBalance(''); setShowAddAccountModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
+                    <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶</h3>
+                    <button onClick={() => setShowAddAccountModal(true)} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {accounts.map(acc => (
                       <div key={acc.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm relative group overflow-hidden transition-shadow hover:shadow-md">
                         <div className="absolute top-0 left-0 w-1 h-full bg-sky-200"></div>
-                        <div className="flex justify-between items-start">
+                        <div className="flex justify-between items-center">
                           <div>
                             <h4 className="text-sm font-bold text-slate-800">{acc.name}</h4>
-                            <span className="text-[10px] text-slate-400 font-medium">
-                              {acc.type === 'BANK' ? '銀行存款' : acc.type === 'INVESTMENT' ? '交割帳戶' : '現金袋'} • {acc.currency}
-                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">{acc.type === 'BANK' ? '銀行存款' : acc.type === 'INVESTMENT' ? '交割帳戶' : '現金袋'} • {acc.currency}</span>
                           </div>
-                          <div className="flex items-center space-x-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={() => { 
-                                setEditingAccount(acc); 
-                                setNewAccName(acc.name); 
-                                setNewAccType(acc.type); 
-                                setNewAccCurrency(acc.currency); 
-                                setNewAccBalance(acc.balance); 
-                                setShowAddAccountModal(true); 
-                              }} 
-                              className="text-slate-400 hover:text-sky-500 p-1 rounded hover:bg-slate-50 transition"
-                              title="修改此帳戶資料"
-                            >
-                              <Icons.Edit className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => handleDeleteAccount(acc.id, acc.name)} 
-                              className="text-slate-350 hover:text-rose-400 p-1 rounded hover:bg-slate-50 transition"
-                              title="手動移除此帳戶"
-                            >
-                              <Icons.Trash className="w-4 h-4" />
-                            </button>
-                          </div>
+                          <button onClick={() => handleDeleteAccount(acc.id, acc.name)} className="text-slate-300 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition">
+                            <Icons.Trash className="w-4 h-4" />
+                          </button>
                         </div>
-                        <p className="text-xl font-black text-slate-800 mt-3">{formatMoney(acc.balance, acc.currency)}</p>
+                        <p className="text-lg font-bold text-slate-800 mt-3">{formatMoney(acc.balance, acc.currency)}</p>
                       </div>
                     ))}
-                    {accounts.length === 0 && (
-                      <div className="col-span-2 py-8 text-center text-slate-400 font-medium">您的盆內目前尚無儲蓄存款帳戶。</div>
-                    )}
                   </div>
                 </div>
               )}
 
               {/* 股票投資 */}
               {activeTab === 'positions' && (
-                <div className="space-y-4 animate-fade-in">
+                <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-slate-800">台美持股明細</h3>
                       <span className="bg-emerald-50 text-emerald-600 border border-emerald-150 px-2 py-0.5 rounded-full text-[9px] font-bold">實時報價同步</span>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={handleUpdateStockQuotes} disabled={stockLoading} className="bg-slate-50 hover:bg-slate-100 border border-slate-150 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors">
+                      <button onClick={handleUpdateStockQuotes} disabled={stockLoading} className="bg-slate-50 hover:bg-slate-100 border border-slate-150 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all">
                         <Icons.Refresh className={`w-3.5 h-3.5 ${stockLoading ? 'animate-spin text-sky-500' : ''}`} />
-                        <span>{stockLoading ? '連線交易所中...' : '更新即時市價'}</span>
+                        <span>更新即時市價</span>
                       </button>
-                      <button onClick={() => { setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">登錄股票交易</button>
+                      <button onClick={() => { setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-all">登錄交易</button>
                     </div>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
@@ -1139,7 +1128,7 @@
                         <thead>
                           <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-bold">
                             <th className="py-3 px-4">代號 / 名稱</th>
-                            <th className="py-3 px-4 text-right">持有股數</th>
+                            <th className="py-3 px-4 text-right">股數</th>
                             <th className="py-3 px-4 text-right">平均成本</th>
                             <th className="py-3 px-4 text-right">目前現價</th>
                             <th className="py-3 px-4 text-right">市值</th>
@@ -1149,47 +1138,36 @@
                         </thead>
                         <tbody>
                           {positionsAnalysis.list.map(pos => (
-                            <tr key={pos.id} className="border-b border-slate-50 hover:bg-slate-50/20 transition-colors">
+                            <tr key={pos.id} className="border-b border-slate-50 hover:bg-slate-50/20">
                               <td className="py-3 px-4 font-bold">
                                 <div className="flex items-center gap-1.5">
                                   <span className="text-slate-800">{pos.symbol}</span>
-                                  <span className={`text-[8px] px-1 rounded font-bold ${pos.market === 'US' ? 'bg-sky-100 text-sky-600' : 'bg-emerald-100 text-emerald-600'}`}>{pos.market === 'US' ? '美' : '台'}</span>
+                                  <span className={`text-[8px] px-1.5 py-0.2 rounded font-semibold ${pos.market === 'US' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>{pos.market === 'US' ? '美' : '台'}</span>
                                 </div>
-                                <span className="text-[10px] text-slate-400 block font-normal truncate max-w-[120px]" title={pos.name}>{pos.name}</span>
+                                <span className="text-[10px] text-slate-400 block font-normal truncate max-w-[120px]">{pos.name}</span>
                               </td>
                               <td className="py-3 px-4 text-right font-medium">{pos.shares.toLocaleString()}</td>
-                              <td className="py-3 px-4 text-right text-slate-500">{formatMoney(pos.avgCost, pos.market === 'US' ? 'USD' : 'TWD')}</td>
+                              <td className="py-3 px-4 text-right">{formatMoney(pos.avgCost, pos.market === 'US' ? 'USD' : 'TWD')}</td>
                               <td className="py-3 px-4 text-right font-bold text-slate-800">{formatMoney(pos.currentPrice, pos.market === 'US' ? 'USD' : 'TWD')}</td>
-                              <td className="py-3 px-4 text-right font-extrabold text-slate-900">{formatMoney(convertAmount(pos.valueTWD, 'TWD', displayCurrency))}</td>
-                              <td className={`py-3 px-4 text-right font-bold ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                <div>{pos.profitTWD >= 0 ? '+' : ''}{pos.profitPercent.toFixed(1)}%</div>
-                                <span className="text-[10px] font-medium block">{pos.profitTWD >= 0 ? '▲' : '▼'} {formatMoney(convertAmount(Math.abs(pos.profitTWD), 'TWD', displayCurrency))}</span>
+                              <td className="py-3 px-4 text-right font-extrabold">{formatMoney(convertAmount(pos.valueTWD, 'TWD', displayCurrency))}</td>
+                              <td className="py-3 px-4 text-right">
+                                <span className={`font-bold block ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                  {pos.profitTWD >= 0 ? '+' : ''}{formatMoney(convertAmount(pos.profitTWD, 'TWD', displayCurrency))}
+                                </span>
+                                <span className={`text-[10px] font-semibold ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                  {pos.profitPercent.toFixed(1)}%
+                                </span>
                               </td>
                               <td className="py-3 px-4 text-center">
-                                <div className="flex items-center justify-center space-x-1">
-                                  <button 
-                                    onClick={() => {
-                                      setEditingPosition(pos);
-                                      setEditPosShares(pos.shares);
-                                      setEditPosAvgCost(pos.avgCost);
-                                      setEditPosCurrentPrice(pos.currentPrice);
-                                      setShowEditPositionModal(true);
-                                    }} 
-                                    className="text-slate-400 hover:text-sky-500 p-1 rounded transition hover:bg-slate-50"
-                                    title="修改此項持股與報價"
-                                  >
-                                    <Icons.Edit className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-350 hover:text-rose-400 p-1 rounded transition hover:bg-slate-50">
-                                    <Icons.Trash className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
+                                <button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-300 hover:text-rose-400 transition-colors">
+                                  <Icons.Trash className="w-4 h-4" />
+                                </button>
                               </td>
                             </tr>
                           ))}
                           {positions.length === 0 && (
                             <tr>
-                              <td colSpan="7" className="py-8 text-center text-slate-400 font-medium">您的盆內目前尚無持股。請點擊右上角「登錄股票交易」增加。</td>
+                              <td colSpan="7" className="py-8 text-center text-slate-400 font-medium">您的盆內目前尚無持股部位。</td>
                             </tr>
                           )}
                         </tbody>
@@ -1204,25 +1182,16 @@
                 <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">記帳歷史紀錄</h3>
-                    <button onClick={() => { setTxType('TRANSFER'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">轉帳/跨國換匯</button>
+                    <button onClick={() => { setTxType('TRANSFER'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">轉帳/換匯</button>
                   </div>
-                  <div className="bg-white border border-slate-100 rounded-[20px] overflow-hidden shadow-sm divide-y divide-slate-50">
+                  <div className="bg-white border border-slate-100 rounded-[24px] overflow-hidden shadow-sm divide-y divide-slate-50">
                     {transactions.map(tx => (
-                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/10 transition-colors group">
-                        <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 truncate">{tx.note}</p>
+                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/20 transition-all">
+                        <div>
+                          <p className="font-bold text-slate-800">{tx.note}</p>
                           <span className="text-[9px] text-slate-400">{tx.date}</span>
                         </div>
-                        <div className="flex items-center gap-3 ml-4">
-                          <span className="font-extrabold text-slate-800 shrink-0">{tx.type === 'BUY' ? '-' : '+'}{formatMoney(tx.amount)}</span>
-                          <button 
-                            onClick={() => handleDeleteTransaction(tx.id)} 
-                            className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-rose-50 transition opacity-0 group-hover:opacity-100"
-                            title="刪除此筆記帳"
-                          >
-                            <Icons.Trash className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <span className="font-extrabold text-slate-800">{tx.type === 'BUY' ? '-' : '+'}{formatMoney(tx.amount)}</span>
                       </div>
                     ))}
                     {transactions.length === 0 && (
@@ -1242,7 +1211,7 @@
                 <form onSubmit={handleAccountSubmit} className="space-y-4">
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">帳戶名稱</label>
-                    <input type="text" required placeholder="如：國泰數位戶" value={newAccName} onChange={e => setNewAccName(e.target.value)} className="w-full bg-slate-50 border border-slate-150 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                    <input type="text" required placeholder="如：國泰數位戶" value={newAccName} onChange={e => setNewAccName(e.target.value)} className="w-full bg-slate-50 border border-slate-150 rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -1254,7 +1223,7 @@
                       </select>
                     </div>
                     <div>
-                      <label className="text-[10px] text-slate-400 block mb-1">儲蓄幣別</label>
+                      <label className="text-[10px] text-slate-400 block mb-1">主要儲蓄幣別</label>
                       <select value={newAccCurrency} onChange={e => setNewAccCurrency(e.target.value)} className="w-full bg-slate-50 border border-slate-150 rounded-xl px-3 py-2 text-xs focus:outline-none">
                         <option value="TWD">TWD</option>
                         <option value="USD">USD</option>
@@ -1386,15 +1355,15 @@
                 <form onSubmit={handleSaveEditPosition} className="space-y-4">
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">持有股數</label>
-                    <input type="number" required value={editPosShares} onChange={e => setEditPosShares(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                    <input type="number" required value={editPosShares} onChange={e => setEditPosShares(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">平均購入成本</label>
-                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">當前市價（現價）</label>
-                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                   </div>
                   <div className="flex justify-end space-x-3 pt-4 border-t">
                     <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
@@ -1411,46 +1380,6 @@
           <footer className="bg-white border-t border-slate-100 py-6 text-center text-[11px] text-slate-400 mt-auto">
             <span>© 2026 聚寶盆 · 支援 iOS PWA 滿版主畫面安裝機制</span>
           </footer>
-        </div>
-      );
-    }
-
-    // 渲染雲端配置設定中心彈窗
-    function renderCloudConfigModal() {
-      return (
-        <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-stone-200 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl animate-fade-in text-left">
-            <div className="flex justify-between items-center border-b pb-2">
-              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider flex items-center gap-1">
-                <Icons.Cloud className="w-4 h-4 text-sky-400" />
-                <span>聚寶盆 · 私人免費雲端同步設定</span>
-              </h3>
-              <button onClick={() => setShowCloudConfigModal(false)} className="text-stone-400 hover:text-stone-600">✕</button>
-            </div>
-            
-            <div className="text-[11px] text-stone-500 space-y-2 leading-relaxed">
-              <p className="font-bold text-stone-700">💡 只要簡單三步，建立您的永久免費、100% 安全雲端資料庫：</p>
-              <ol className="list-decimal list-inside space-y-1">
-                <li>前往 <a href="https://console.firebase.google.com/" target="_blank" className="text-sky-500 font-bold underline">Firebase 主控台</a> 建立一個免費專案。</li>
-                <li>在專案內新增 <strong>Web 應用程式</strong>，並啟用 <strong>Authentication</strong> (啟用電子郵件/密碼) 與 <strong>Cloud Firestore</strong> 資料庫 (選擇測試模式)。</li>
-                <li>將生成的 <code className="bg-stone-50 p-0.5 rounded text-rose-500 font-mono">firebaseConfig</code> 設定物件代碼，貼在下方：</li>
-              </ol>
-            </div>
-
-            <form onSubmit={handleSaveFirebaseConfig} className="space-y-3">
-              <textarea
-                placeholder={`{\n  apiKey: "AIzaSy...",\n  authDomain: "jubaopen...",\n  projectId: "jubaopen...",\n  appId: "1:..."\n}`}
-                value={firebaseConfigInput}
-                onChange={e => setFirebaseConfigInput(e.target.value)}
-                className="w-full h-36 bg-stone-50 border border-stone-150 rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]"
-              />
-              <p className="text-[10px] text-stone-400">※ 提示：留空並提交儲存，即可關閉雲端，切換回原本的本機對帳。※</p>
-              <div className="flex justify-end gap-2 pt-2 border-t">
-                <button type="button" onClick={() => setShowCloudConfigModal(false)} className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-xs font-bold rounded-xl text-stone-500">取消</button>
-                <button type="submit" className="px-5 py-2 bg-[#9a8c7d] hover:bg-[#8d7f70] text-xs font-bold rounded-xl text-white">保存並重載 App</button>
-              </div>
-            </form>
-          </div>
         </div>
       );
     }
