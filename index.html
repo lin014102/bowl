@@ -10,6 +10,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="聚寶盆">
   
+  <!-- iOS PWA 加入主畫面後的桌面 Logo 設定 (apple-touch-icon) -->
+  <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/lin014102/bowl/main/S__241557551.jpg">
+  <link rel="apple-touch-icon" sizes="152x152" href="https://raw.githubusercontent.com/lin014102/bowl/main/S__241557551.jpg">
+  <link rel="apple-touch-icon" sizes="167x167" href="https://raw.githubusercontent.com/lin014102/bowl/main/S__241557551.jpg">
+  <link rel="apple-touch-icon" sizes="180x180" href="https://raw.githubusercontent.com/lin014102/bowl/main/S__241557551.jpg">
+  
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   
@@ -747,7 +753,6 @@
                 </div>
               </div>
 
-              {}
               {/* 理財目標與進度條 (支援完備的行內自由編輯) */}
               <div className="bg-white border border-slate-100 rounded-[24px] p-5 shadow-sm space-y-4">
                 <div className="flex justify-between items-center text-xs font-semibold">
@@ -779,7 +784,6 @@
                 </div>
               </div>
 
-              {}
               {/* SVG Donut 圓餅圖 */}
               <div className="bg-white border border-slate-100 rounded-[24px] p-6 shadow-sm">
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">資產分配圓餅圖</h3>
@@ -833,7 +837,6 @@
                 </div>
               )}
 
-              {}
               {/* 帳戶管理 (支援完整的建立、修改、與刪除) */}
               {activeTab === 'accounts' && (
                 <div className="space-y-4 animate-fade-in">
@@ -869,7 +872,7 @@
                             </button>
                             <button 
                               onClick={() => handleDeleteAccount(acc.id, acc.name)} 
-                              className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-slate-50 transition"
+                              className="text-slate-350 hover:text-rose-400 p-1 rounded hover:bg-slate-50 transition"
                               title="手動移除此帳戶"
                             >
                               <Icons.Trash className="w-4 h-4" />
@@ -886,7 +889,6 @@
                 </div>
               )}
 
-              {}
               {/* 股票投資 (已完美串接 Yahoo 即時 API，並支援股數/成本行內修改) */}
               {activeTab === 'positions' && (
                 <div className="space-y-4 animate-fade-in">
@@ -969,7 +971,6 @@
                 </div>
               )}
 
-              {}
               {/* 歷史流水帳 (支援自由刪除多記的帳目) */}
               {activeTab === 'transactions' && (
                 <div className="space-y-4 animate-fade-in">
@@ -1005,7 +1006,6 @@
             </section>
           </main>
 
-          {}
           {/* 彈窗 A：新帳戶 / 編輯帳戶 (二合一) */}
           {showAddAccountModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
