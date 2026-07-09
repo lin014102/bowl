@@ -452,7 +452,7 @@
         const password = passwordInput;
         if (!username || !password) { triggerNotification('請輸入帳號與密碼', 'error'); return; }
 
-        if (loginTab === 'cloud' && isFirebaseActive && typeof firebase !== 'undefined') {
+        if (isFirebaseActive && typeof firebase !== 'undefined') {
           setCloudSyncStatus('syncing');
           try {
             const email = username.includes('@') ? username : `${username}@jubaopen.com`;
