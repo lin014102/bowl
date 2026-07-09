@@ -28,15 +28,24 @@
     input, select {
       user-select: text;
     }
+    .animate-fade-in {
+      animation: fadeIn 0.3s ease-out forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
 
   <div id="root"></div>
 
-  <!-- React 程式碼區塊 -->
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
+
+    // 專屬聚寶盆 Logo 圖片連結 (自動將 GitHub 檢視連結轉為 Raw 原始圖片連結)
+    const LOGO_URL = "https://raw.githubusercontent.com/lin014102/bowl/main/S__241557551.jpg";
 
     // 預設匯率 (開機備用)
     const FALLBACK_RATES = {
@@ -46,7 +55,7 @@
       EUR: 35.20
     };
 
-    // 預設初始資產資料
+    // 預設初始資產資料 (首次註冊多帳號時的精美沙盒範本)
     const DEFAULT_USER_DATA = {
       accounts: [
         { id: 'acc-1', name: '國泰世華台幣戶', type: 'BANK', currency: 'TWD', balance: 350000 },
@@ -65,7 +74,7 @@
       savingsGoal: 2000000
     };
 
-    // SVG 圖示包
+    // SVG 圖示包 - 確保 App 隨時隨地 100% 離線完美加載
     const Icons = {
       Wallet: ({ className }) => (
         <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -122,41 +131,65 @@
         <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
+      ),
+      Edit: ({ className }) => (
+        <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
       )
     };
 
     function App() {
-      // 狀態設定
+      // 登入認證狀態
       const [currentUser, setCurrentUser] = useState(null);
       const [authMode, setAuthMode] = useState('login');
       const [usernameInput, setUsernameInput] = useState('');
       const [passwordInput, setPasswordInput] = useState('');
       const [rememberMe, setRememberMe] = useState(true);
 
+      // 個人帳務狀態
       const [accounts, setAccounts] = useState([]);
       const [positions, setPositions] = useState([]);
       const [transactions, setTransactions] = useState([]);
       const [savingsGoal, setSavingsGoal] = useState(2000000);
+      
+      // 目標編輯狀態
+      const [isEditingGoal, setIsEditingGoal] = useState(false);
+      const [tempGoal, setTempGoal] = useState(savingsGoal);
 
+      // 即時 API 狀態
       const [rates, setRates] = useState(FALLBACK_RATES);
       const [ratesLoading, setRatesLoading] = useState(false);
       const [stockLoading, setStockLoading] = useState(false);
       const [lastUpdated, setLastUpdated] = useState("未同步");
 
+      // 介面導航控制
       const [activeTab, setActiveTab] = useState('dashboard');
       const [displayCurrency, setDisplayCurrency] = useState('TWD');
       const [hideValues, setHideValues] = useState(false);
       const [notification, setNotification] = useState(null);
 
+      // 彈窗與編輯對象控制
       const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+      const [editingAccount, setEditingAccount] = useState(null); // 當不為 null 時代表正處於修改帳戶模式
+
       const [showAddTxModal, setShowAddTxModal] = useState(false);
 
-      // 表單
+      const [showEditPositionModal, setShowEditPositionModal] = useState(false);
+      const [editingPosition, setEditingPosition] = useState(null); // 當不為 null 時代表正處於修改持股模式
+
+      // 建立與修改帳戶之表單狀態
       const [newAccName, setNewAccName] = useState('');
       const [newAccType, setNewAccType] = useState('BANK');
       const [newAccCurrency, setNewAccCurrency] = useState('TWD');
       const [newAccBalance, setNewAccBalance] = useState('');
 
+      // 編輯持股之表單狀態
+      const [editPosShares, setEditPosShares] = useState('');
+      const [editPosAvgCost, setEditPosAvgCost] = useState('');
+      const [editPosCurrentPrice, setEditPosCurrentPrice] = useState('');
+
+      // 記帳交易之表單狀態
       const [txType, setTxType] = useState('BUY');
       const [txAccountId, setTxAccountId] = useState('');
       const [txTargetAccountId, setTxTargetAccountId] = useState('');
@@ -170,6 +203,7 @@
       const [txNote, setTxNote] = useState('');
       const [queryLoading, setQueryLoading] = useState(false);
 
+      // 提示氣泡通知
       const triggerNotification = (message, type = 'success') => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 3500);
@@ -183,13 +217,14 @@
         fetchLiveRates();
       }, []);
 
+      // 資料變更時自動儲存至 LocalStorage，保障關網頁資料亦不遺失
       useEffect(() => {
         if (!currentUser) return;
         const dataToSave = { accounts, positions, transactions, savingsGoal };
         localStorage.setItem(`jubaopen_user_data_${currentUser}`, JSON.stringify(dataToSave));
       }, [accounts, positions, transactions, savingsGoal, currentUser]);
 
-      // 取得即時外匯匯率 API
+      // 取得即時國際外匯匯率 API
       const fetchLiveRates = async () => {
         setRatesLoading(true);
         try {
@@ -212,16 +247,15 @@
         }
       };
 
-      // 【核心功能】透過 CORS 代理連接真實 Yahoo Finance API 獲取股價
+      // 透過 CORS 代理無金鑰直連真實 Yahoo Finance API 獲取即時股票行情
       const fetchRealStockPrice = async (symbol, market) => {
         const formattedSymbol = market === 'TW' ? `${symbol}.TW` : symbol.toUpperCase();
-        // 使用 corsproxy.io 作為免費中繼，完美避開瀏覽器 CORS 擋住的問題
         const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d`;
         const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`;
 
         try {
           const response = await fetch(proxiedUrl);
-          if (!response.ok) throw new Error("找不到個股資料");
+          if (!response.ok) throw new Error("找不到該標的資料");
           const data = await response.json();
           const meta = data.chart?.result?.[0]?.meta;
           if (meta && meta.regularMarketPrice) {
@@ -230,14 +264,14 @@
               shortName: meta.shortName || symbol.toUpperCase()
             };
           }
-          throw new Error("解析股價欄位失敗");
+          throw new Error("解析報價失敗");
         } catch (err) {
-          console.error("無法自交易所獲取報價: ", err);
+          console.error("報價獲取異常: ", err);
           return null;
         }
       };
 
-      // 新增持股時的自動查詢即時市價按鈕
+      // 登錄新交易時，一鍵上網詢價並自動帶入表單中
       const handleQueryStockPrice = async () => {
         if (!txSymbol.trim()) {
           triggerNotification('請輸入股票代號再進行查詢', 'error');
@@ -252,20 +286,20 @@
           if (result.shortName && !txStockName) {
             setTxStockName(result.shortName);
           }
-          triggerNotification(`🔍 成功獲取 ${txSymbol.toUpperCase()} 最新市價: ${result.price} !`);
+          triggerNotification(`🔍 成功獲取 ${txSymbol.toUpperCase()} 最新行情: ${result.price} !`);
         } else {
-          triggerNotification('查詢失敗，請檢查代號或市場別是否正確 (美股如 AAPL，台股如 2330)', 'error');
+          triggerNotification('查詢失敗，請檢查代號或市場別 (美股如 AAPL，台股如 2330)', 'error');
         }
       };
 
-      // 更新目前所有持有股票的最新真實行情
+      // 更新目前所有盆內持股的最新真實即時市價
       const handleUpdateStockQuotes = async () => {
         if (positions.length === 0) {
-          triggerNotification('帳戶中目前無持股部位', 'error');
+          triggerNotification('盆中目前尚無持有任何股份部位', 'error');
           return;
         }
         setStockLoading(true);
-        triggerNotification('已向交易所發送即時詢價請求...', 'info');
+        triggerNotification('正與全球交易所同步最新實時行情...', 'info');
 
         try {
           const updatedPositions = await Promise.all(
@@ -278,13 +312,13 @@
                   name: res.shortName || pos.name
                 };
               }
-              return pos; // 失敗時保持原價
+              return pos; // 連線失敗時維持原庫存價格
             })
           );
           setPositions(updatedPositions);
-          triggerNotification('🔄 已成功同步交易所真實即時市價！');
+          triggerNotification('🔄 已成功同步全球最新即時市價！');
         } catch (err) {
-          triggerNotification('同步部分股價失敗，請稍候重試', 'error');
+          triggerNotification('同步部分股價失敗，請稍後重試', 'error');
         } finally {
           setStockLoading(false);
         }
@@ -307,6 +341,7 @@
         return symbol + cleanAmount.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
       };
 
+      // 持股估值與未實現損益重算
       const positionsAnalysis = useMemo(() => {
         let totalStockValueTWD = 0;
         let totalStockCostTWD = 0;
@@ -327,10 +362,12 @@
         return { list, totalStockValueTWD, totalStockCostTWD, totalTWStockValueTWD, totalUSStockValueTWD, totalProfitTWD: totalStockValueTWD - totalStockCostTWD, totalProfitPercent: totalStockCostTWD > 0 ? ((totalStockValueTWD - totalStockCostTWD) / totalStockCostTWD) * 100 : 0 };
       }, [positions, rates]);
 
+      // 現金存款動態加總
       const totalCashTWD = useMemo(() => {
         return accounts.reduce((sum, acc) => sum + (acc.balance * (rates[acc.currency] || FALLBACK_RATES[acc.currency])), 0);
       }, [accounts, rates]);
 
+      // 現金與外幣細分
       const cashBreakdownTWD = useMemo(() => {
         let twd = 0, foreign = 0;
         accounts.forEach(acc => {
@@ -341,15 +378,17 @@
         return { twd, foreign };
       }, [accounts, rates]);
 
+      // 總預估淨資產 (完全由帳務數據即時算成)
       const netWorthTWD = totalCashTWD + positionsAnalysis.totalStockValueTWD;
 
+      // 圓餅圖莫蘭迪馬卡龍四色配色設定
       const assetAllocation = useMemo(() => {
         if (netWorthTWD === 0) return [];
         return [
-          { name: '台幣現金/活存', value: cashBreakdownTWD.twd, color: '#38bdf8', tailwindColor: 'bg-sky-400' },
+          { name: '台幣現金/活存', value: cashBreakdownTWD.twd, color: '#60a5fa', tailwindColor: 'bg-blue-400' },
           { name: '外幣現鈔/存款', value: cashBreakdownTWD.foreign, color: '#34d399', tailwindColor: 'bg-emerald-400' },
-          { name: '台股投資市值', value: positionsAnalysis.totalTWStockValueTWD, color: '#f97316', tailwindColor: 'bg-orange-500' },
-          { name: '美股投資市值', value: positionsAnalysis.totalUSStockValueTWD, color: '#a855f7', tailwindColor: 'bg-purple-500' }
+          { name: '台股投資市值', value: positionsAnalysis.totalTWStockValueTWD, color: '#fb923c', tailwindColor: 'bg-orange-400' },
+          { name: '美股投資市值', value: positionsAnalysis.totalUSStockValueTWD, color: '#c084fc', tailwindColor: 'bg-purple-400' }
         ];
       }, [netWorthTWD, cashBreakdownTWD, positionsAnalysis]);
 
@@ -403,6 +442,7 @@
           setPositions(userData.positions || []);
           setTransactions(userData.transactions || []);
           setSavingsGoal(userData.savingsGoal || 2000000);
+          setTempGoal(userData.savingsGoal || 2000000);
         }
         triggerNotification(`歡迎回來，您的聚寶盆已開啟 🌸`);
       };
@@ -415,15 +455,64 @@
         triggerNotification('聚寶盆已安全上鎖 🔒');
       };
 
-      const handleAddAccount = (e) => {
+      const handleSaveGoal = () => {
+        const parsed = parseFloat(tempGoal);
+        if (!isNaN(parsed) && parsed > 0) {
+          setSavingsGoal(parsed);
+          setIsEditingGoal(false);
+          triggerNotification('理財目標已順利更新 🌸');
+        } else {
+          triggerNotification('請輸入有效的數字金額', 'error');
+        }
+      };
+
+      // 建立與修改帳戶處理
+      const handleAccountSubmit = (e) => {
         e.preventDefault();
-        const newAccount = { id: 'acc-' + Date.now(), name: newAccName, type: newAccType, currency: newAccCurrency, balance: parseFloat(newAccBalance) };
-        setAccounts([...accounts, newAccount]);
-        setTransactions([{ id: 'tx-' + Date.now(), type: 'DEPOSIT', amount: parseFloat(newAccBalance), fromAccount: null, toAccount: newAccount.id, symbol: null, shares: null, price: null, fee: 0, date: new Date().toISOString().split('T')[0], note: `開啟資產戶「${newAccName}」初始資金` }, ...transactions]);
+        const balanceNum = parseFloat(newAccBalance);
+        if (isNaN(balanceNum)) {
+          triggerNotification('請填入正確的存款金額', 'error');
+          return;
+        }
+
+        if (editingAccount) {
+          // 修改現有帳戶
+          setAccounts(accounts.map(acc => acc.id === editingAccount.id ? {
+            ...acc,
+            name: newAccName,
+            type: newAccType,
+            currency: newAccCurrency,
+            balance: balanceNum
+          } : acc));
+
+          // 增加手動修正記帳日誌
+          setTransactions([{
+            id: 'tx-' + Date.now(),
+            type: 'DEPOSIT',
+            amount: balanceNum - editingAccount.balance,
+            fromAccount: null,
+            toAccount: editingAccount.id,
+            symbol: null,
+            shares: null,
+            price: null,
+            fee: 0,
+            date: new Date().toISOString().split('T')[0],
+            note: `手動更新並修正「${newAccName}」帳戶餘額`
+          }, ...transactions]);
+
+          setEditingAccount(null);
+          triggerNotification('帳戶資料已成功修改！🌸');
+        } else {
+          // 建立全新帳戶
+          const newAccount = { id: 'acc-' + Date.now(), name: newAccName, type: newAccType, currency: newAccCurrency, balance: balanceNum };
+          setAccounts([...accounts, newAccount]);
+          setTransactions([{ id: 'tx-' + Date.now(), type: 'DEPOSIT', amount: balanceNum, fromAccount: null, toAccount: newAccount.id, symbol: null, shares: null, price: null, fee: 0, date: new Date().toISOString().split('T')[0], note: `開啟資產戶「${newAccName}」初始資金` }, ...transactions]);
+          triggerNotification('新資產帳戶已存入聚寶盆 🌸');
+        }
+
         setNewAccName('');
         setNewAccBalance('');
         setShowAddAccountModal(false);
-        triggerNotification('新資產帳戶已存入聚寶盆 🌸');
       };
 
       const handleDeleteAccount = (id, name) => {
@@ -438,6 +527,34 @@
       const handleDeletePosition = (posId, symbol) => {
         setPositions(positions.filter(p => p.id !== posId));
         triggerNotification(`已手動移除 ${symbol} 持股項目`);
+      };
+
+      const handleSaveEditPosition = (e) => {
+        e.preventDefault();
+        const sharesNum = parseFloat(editPosShares);
+        const costNum = parseFloat(editPosAvgCost);
+        const currentPriceNum = parseFloat(editPosCurrentPrice);
+
+        if (isNaN(sharesNum) || isNaN(costNum) || isNaN(currentPriceNum)) {
+          triggerNotification('請輸入有效的股數與價格', 'error');
+          return;
+        }
+
+        setPositions(positions.map(pos => pos.id === editingPosition.id ? {
+          ...pos,
+          shares: sharesNum,
+          avgCost: costNum,
+          currentPrice: currentPriceNum
+        } : pos));
+
+        setShowEditPositionModal(false);
+        setEditingPosition(null);
+        triggerNotification('持股部位與估值修改成功！🌸');
+      };
+
+      const handleDeleteTransaction = (txId) => {
+        setTransactions(transactions.filter(t => t.id !== txId));
+        triggerNotification('已成功移除該日記帳流水帳 🌸');
       };
 
       const handleAddTransaction = (e) => {
@@ -517,8 +634,16 @@
           <div className="min-h-screen bg-[#f9f8f6] text-stone-600 font-sans flex flex-col items-center justify-center p-4 antialiased">
             <div className="max-w-md w-full bg-white border border-stone-200/40 rounded-[32px] p-8 shadow-sm space-y-6 animate-fade-in">
               <div className="text-center space-y-2">
-                <div className="w-16 h-16 rounded-[24px] bg-[#f3f0ec] flex items-center justify-center mx-auto shadow-sm">
-                  <span className="text-3xl">🍯</span>
+                <div className="w-16 h-16 rounded-[24px] bg-[#f3f0ec] flex items-center justify-center mx-auto shadow-sm overflow-hidden">
+                  <img 
+                    src={LOGO_URL} 
+                    alt="聚寶盆" 
+                    className="w-full h-full object-cover rounded-[24px]" 
+                    onError={(e) => { 
+                      e.target.onerror = null; 
+                      e.target.outerHTML = '<span class="text-3xl">🍯</span>'; 
+                    }} 
+                  />
                 </div>
                 <h1 className="text-2xl font-bold text-stone-800 tracking-tight">聚寶盆</h1>
                 <p className="text-xs text-stone-400 font-semibold tracking-wider">極簡美學 · 全方位資產管理</p>
@@ -553,8 +678,16 @@
           {/* 頂部柔和導覽列 */}
           <header className="sticky top-0 z-30 bg-[#f0f7ff]/90 backdrop-blur-md border-b border-sky-100 px-6 py-4 flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-9 h-9 rounded-2xl bg-sky-200 flex items-center justify-center shadow-sm">
-                <span className="text-lg">🍯</span>
+              <div className="w-9 h-9 rounded-2xl bg-sky-200 flex items-center justify-center shadow-sm overflow-hidden">
+                <img 
+                  src={LOGO_URL} 
+                  alt="聚寶盆" 
+                  className="w-full h-full object-cover rounded-2xl" 
+                  onError={(e) => { 
+                    e.target.onerror = null; 
+                    e.target.outerHTML = '<span class="text-lg">🍯</span>'; 
+                  }} 
+                />
               </div>
               <div>
                 <h1 className="text-md font-bold text-slate-800 tracking-tight">聚寶盆</h1>
@@ -581,7 +714,7 @@
 
           {/* 訊息提示通知 */}
           {notification && (
-            <div className="fixed bottom-4 right-4 z-50">
+            <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
               <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${
                 notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' :
                 notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' :
@@ -595,35 +728,58 @@
           {/* 主要內容區 */}
           <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col lg:flex-row gap-8">
             <section className="w-full lg:w-[410px] shrink-0 space-y-6">
+              
               {/* 總預估淨資產卡片 */}
-              <div className="relative overflow-hidden bg-gradient-to-br from-[#e0f2fe]/90 via-[#f0f9ff]/70 to-[#e0f2fe]/60 border border-sky-100/60 rounded-[30px] p-6 text-slate-800 shadow-sm shadow-sky-100/30">
+              <div className="relative overflow-hidden bg-gradient-to-br from-[#e0f2fe]/95 via-[#f0f9ff]/80 to-[#e0f2fe]/60 border border-sky-100/60 rounded-[30px] p-6 text-slate-800 shadow-sm shadow-sky-100/30">
                 <span className="text-[10px] font-bold tracking-widest text-slate-400 uppercase">當前預估淨資產 (Net Worth)</span>
                 <h2 className="text-3xl font-extrabold tracking-tight text-slate-800 mt-2">
                   {formatMoney(convertAmount(netWorthTWD, 'TWD', displayCurrency))}
                 </h2>
                 <div className="mt-6 pt-5 border-t border-sky-100/50 grid grid-cols-2 gap-4 text-xs">
                   <div>
-                    <p className="text-slate-400">可用資金存款</p>
+                    <p className="text-slate-400 font-semibold">可用資金存款</p>
                     <p className="font-extrabold text-slate-700 mt-0.5">{formatMoney(convertAmount(totalCashTWD, 'TWD', displayCurrency))}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400">持股投資市值</p>
+                    <p className="text-slate-400 font-semibold">持股投資市值</p>
                     <p className="font-extrabold text-slate-700 mt-0.5">{formatMoney(convertAmount(positionsAnalysis.totalStockValueTWD, 'TWD', displayCurrency))}</p>
                   </div>
                 </div>
               </div>
 
-              {/* 理財目標與進度條 */}
+              {}
+              {/* 理財目標與進度條 (支援完備的行內自由編輯) */}
               <div className="bg-white border border-slate-100 rounded-[24px] p-5 shadow-sm space-y-4">
                 <div className="flex justify-between items-center text-xs font-semibold">
                   <span className="text-slate-700">目標進度 {((netWorthTWD / savingsGoal) * 100).toFixed(1)}%</span>
-                  <span className="text-slate-400">目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}</span>
+                  {isEditingGoal ? (
+                    <div className="flex items-center space-x-1">
+                      <input 
+                        type="number" 
+                        value={tempGoal} 
+                        onChange={e => setTempGoal(e.target.value)} 
+                        className="w-24 px-2 py-0.5 bg-slate-50 border rounded-lg text-xs font-bold text-slate-700 focus:outline-none"
+                      />
+                      <button onClick={handleSaveGoal} className="text-emerald-500 font-black hover:text-emerald-600 px-1">✓</button>
+                      <button onClick={() => setIsEditingGoal(false)} className="text-rose-500 font-black hover:text-rose-600 px-1">✕</button>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => { setTempGoal(savingsGoal); setIsEditingGoal(true); }} 
+                      className="text-slate-400 hover:text-sky-500 flex items-center gap-1 transition-colors"
+                      title="點擊修改理財目標"
+                    >
+                      <span>目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}</span>
+                      <Icons.Edit className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
                 <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
                   <div className="h-full bg-sky-300 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, (netWorthTWD / savingsGoal) * 100)}%` }} />
                 </div>
               </div>
 
+              {}
               {/* SVG Donut 圓餅圖 */}
               <div className="bg-white border border-slate-100 rounded-[24px] p-6 shadow-sm">
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">資產分配圓餅圖</h3>
@@ -663,122 +819,181 @@
 
               {/* 資產明細 */}
               {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fade-in">
                   <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <span className="text-xs text-slate-400 font-bold block">可用存款總計</span>
                     <p className="text-xl font-bold text-slate-800 mt-1">{formatMoney(convertAmount(totalCashTWD, 'TWD', displayCurrency))}</p>
+                    <button onClick={() => setActiveTab('accounts')} className="text-[10px] text-sky-500 mt-2 font-bold hover:underline block text-left">→ 管理儲蓄帳戶</button>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <span className="text-xs text-slate-400 font-bold block">股票市值總計</span>
                     <p className="text-xl font-bold text-slate-800 mt-1">{formatMoney(convertAmount(positionsAnalysis.totalStockValueTWD, 'TWD', displayCurrency))}</p>
+                    <button onClick={() => setActiveTab('positions')} className="text-[10px] text-sky-500 mt-2 font-bold hover:underline block text-left">→ 管理持股部位</button>
                   </div>
                 </div>
               )}
 
-              {/* 帳戶管理 */}
+              {}
+              {/* 帳戶管理 (支援完整的建立、修改、與刪除) */}
               {activeTab === 'accounts' && (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶</h3>
-                    <button onClick={() => setShowAddAccountModal(true)} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
+                    <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶資產列表</h3>
+                    <button onClick={() => { setEditingAccount(null); setNewAccName(''); setNewAccBalance(''); setShowAddAccountModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {accounts.map(acc => (
                       <div key={acc.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm relative group overflow-hidden transition-shadow hover:shadow-md">
                         <div className="absolute top-0 left-0 w-1 h-full bg-sky-200"></div>
-                        <div className="flex justify-between items-center">
+                        <div className="flex justify-between items-start">
                           <div>
                             <h4 className="text-sm font-bold text-slate-800">{acc.name}</h4>
-                            <span className="text-[10px] text-slate-400 font-medium">{acc.type === 'BANK' ? '銀行存款' : acc.type === 'INVESTMENT' ? '交割帳戶' : '現金袋'} • {acc.currency}</span>
+                            <span className="text-[10px] text-slate-400 font-medium">
+                              {acc.type === 'BANK' ? '銀行存款' : acc.type === 'INVESTMENT' ? '交割帳戶' : '現金袋'} • {acc.currency}
+                            </span>
                           </div>
-                          <button onClick={() => handleDeleteAccount(acc.id, acc.name)} className="text-slate-300 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Icons.Trash className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center space-x-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                              onClick={() => { 
+                                setEditingAccount(acc); 
+                                setNewAccName(acc.name); 
+                                setNewAccType(acc.type); 
+                                setNewAccCurrency(acc.currency); 
+                                setNewAccBalance(acc.balance); 
+                                setShowAddAccountModal(true); 
+                              }} 
+                              className="text-slate-400 hover:text-sky-500 p-1 rounded hover:bg-slate-50 transition"
+                              title="修改此帳戶資料"
+                            >
+                              <Icons.Edit className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => handleDeleteAccount(acc.id, acc.name)} 
+                              className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-slate-50 transition"
+                              title="手動移除此帳戶"
+                            >
+                              <Icons.Trash className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                         <p className="text-xl font-black text-slate-800 mt-3">{formatMoney(acc.balance, acc.currency)}</p>
                       </div>
                     ))}
+                    {accounts.length === 0 && (
+                      <div className="col-span-2 py-8 text-center text-slate-400 font-medium">您的盆內目前尚無儲蓄存款帳戶。</div>
+                    )}
                   </div>
                 </div>
               )}
 
-              {/* 股票投資 (已完美串接 Yahoo 即時 API) */}
+              {}
+              {/* 股票投資 (已完美串接 Yahoo 即時 API，並支援股數/成本行內修改) */}
               {activeTab === 'positions' && (
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
+                <div className="space-y-4 animate-fade-in">
+                  <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-slate-800">台美持股明細</h3>
-                      <span className="bg-emerald-50 text-emerald-600 border border-emerald-150 px-2 py-0.5 rounded-full text-[9px] font-bold">即時 API 已串接</span>
+                      <span className="bg-emerald-50 text-emerald-600 border border-emerald-150 px-2 py-0.5 rounded-full text-[9px] font-bold">實時報價同步</span>
                     </div>
                     <div className="flex gap-2">
                       <button onClick={handleUpdateStockQuotes} disabled={stockLoading} className="bg-slate-50 hover:bg-slate-100 border border-slate-150 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors">
                         <Icons.Refresh className={`w-3.5 h-3.5 ${stockLoading ? 'animate-spin text-sky-500' : ''}`} />
-                        <span>{stockLoading ? '正在連線交易所...' : '更新即時市價'}</span>
+                        <span>{stockLoading ? '連線交易所中...' : '更新即時市價'}</span>
                       </button>
                       <button onClick={() => { setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">登錄股票交易</button>
                     </div>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
-                    <table className="w-full text-xs text-left">
-                      <thead>
-                        <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-bold">
-                          <th className="py-3 px-4">代號 / 名稱</th>
-                          <th className="py-3 px-4 text-right">持有股數</th>
-                          <th className="py-3 px-4 text-right">平均成本</th>
-                          <th className="py-3 px-4 text-right">目前現價</th>
-                          <th className="py-3 px-4 text-right">市值</th>
-                          <th className="py-3 px-4 text-right">未實現損益</th>
-                          <th className="py-3 px-4 text-center">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {positionsAnalysis.list.map(pos => (
-                          <tr key={pos.id} className="border-b border-slate-50 hover:bg-slate-50/20">
-                            <td className="py-3 px-4 font-bold">
-                              <span className="text-slate-800">{pos.symbol}</span>
-                              <span className="text-[10px] text-slate-400 block font-normal truncate max-w-[100px]">{pos.name}</span>
-                            </td>
-                            <td className="py-3 px-4 text-right font-medium">{pos.shares.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-slate-500">{formatMoney(pos.avgCost, pos.market === 'US' ? 'USD' : 'TWD')}</td>
-                            <td className="py-3 px-4 text-right font-bold text-slate-800">{formatMoney(pos.currentPrice, pos.market === 'US' ? 'USD' : 'TWD')}</td>
-                            <td className="py-3 px-4 text-right font-extrabold text-slate-900">{formatMoney(convertAmount(pos.valueTWD, 'TWD', displayCurrency))}</td>
-                            <td className={`py-3 px-4 text-right font-bold ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                              <div>{pos.profitTWD >= 0 ? '+' : ''}{pos.profitPercent.toFixed(1)}%</div>
-                              <span className="text-[10px] font-medium block">{pos.profitTWD >= 0 ? '▲' : '▼'} {formatMoney(convertAmount(Math.abs(pos.profitTWD), 'TWD', displayCurrency))}</span>
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-300 hover:text-rose-400 transition-colors">
-                                <Icons.Trash className="w-4 h-4" />
-                              </button>
-                            </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left min-w-[600px]">
+                        <thead>
+                          <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-bold">
+                            <th className="py-3 px-4">代號 / 名稱</th>
+                            <th className="py-3 px-4 text-right">持有股數</th>
+                            <th className="py-3 px-4 text-right">平均成本</th>
+                            <th className="py-3 px-4 text-right">目前現價</th>
+                            <th className="py-3 px-4 text-right">市值</th>
+                            <th className="py-3 px-4 text-right">未實現損益</th>
+                            <th className="py-3 px-4 text-center">操作</th>
                           </tr>
-                        ))}
-                        {positions.length === 0 && (
-                          <tr>
-                            <td colSpan="7" className="py-8 text-center text-slate-400 font-medium">您的盆內目前尚無持股。請點擊上方「登錄股票交易」增加。</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {positionsAnalysis.list.map(pos => (
+                            <tr key={pos.id} className="border-b border-slate-50 hover:bg-slate-50/20 transition-colors">
+                              <td className="py-3 px-4 font-bold">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-slate-800">{pos.symbol}</span>
+                                  <span className={`text-[8px] px-1 rounded font-bold ${pos.market === 'US' ? 'bg-sky-100 text-sky-600' : 'bg-emerald-100 text-emerald-600'}`}>{pos.market === 'US' ? '美' : '台'}</span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-normal truncate max-w-[120px]" title={pos.name}>{pos.name}</span>
+                              </td>
+                              <td className="py-3 px-4 text-right font-medium">{pos.shares.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right text-slate-500">{formatMoney(pos.avgCost, pos.market === 'US' ? 'USD' : 'TWD')}</td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-800">{formatMoney(pos.currentPrice, pos.market === 'US' ? 'USD' : 'TWD')}</td>
+                              <td className="py-3 px-4 text-right font-extrabold text-slate-900">{formatMoney(convertAmount(pos.valueTWD, 'TWD', displayCurrency))}</td>
+                              <td className={`py-3 px-4 text-right font-bold ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                <div>{pos.profitTWD >= 0 ? '+' : ''}{pos.profitPercent.toFixed(1)}%</div>
+                                <span className="text-[10px] font-medium block">{pos.profitTWD >= 0 ? '▲' : '▼'} {formatMoney(convertAmount(Math.abs(pos.profitTWD), 'TWD', displayCurrency))}</span>
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div className="flex items-center justify-center space-x-1">
+                                  <button 
+                                    onClick={() => {
+                                      setEditingPosition(pos);
+                                      setEditPosShares(pos.shares);
+                                      setEditPosAvgCost(pos.avgCost);
+                                      setEditPosCurrentPrice(pos.currentPrice);
+                                      setShowEditPositionModal(true);
+                                    }} 
+                                    className="text-slate-400 hover:text-sky-500 p-1 rounded transition hover:bg-slate-50"
+                                    title="修改此項持股與報價"
+                                  >
+                                    <Icons.Edit className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-350 hover:text-rose-400 p-1 rounded transition hover:bg-slate-50">
+                                    <Icons.Trash className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                          {positions.length === 0 && (
+                            <tr>
+                              <td colSpan="7" className="py-8 text-center text-slate-400 font-medium">您的盆內目前尚無持股。請點擊右上角「登錄股票交易」增加。</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               )}
 
-              {/* 歷史流水帳 */}
+              {}
+              {/* 歷史流水帳 (支援自由刪除多記的帳目) */}
               {activeTab === 'transactions' && (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">記帳歷史紀錄</h3>
                     <button onClick={() => { setTxType('TRANSFER'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">轉帳/跨國換匯</button>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-[20px] overflow-hidden shadow-sm divide-y divide-slate-50">
                     {transactions.map(tx => (
-                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/10 transition-colors">
-                        <div>
-                          <p className="font-bold text-slate-800">{tx.note}</p>
+                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/10 transition-colors group">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-bold text-slate-800 truncate">{tx.note}</p>
                           <span className="text-[9px] text-slate-400">{tx.date}</span>
                         </div>
-                        <span className="font-extrabold text-slate-800">{tx.type === 'BUY' ? '-' : '+'}{formatMoney(tx.amount)}</span>
+                        <div className="flex items-center gap-3 ml-4">
+                          <span className="font-extrabold text-slate-800 shrink-0">{tx.type === 'BUY' ? '-' : '+'}{formatMoney(tx.amount)}</span>
+                          <button 
+                            onClick={() => handleDeleteTransaction(tx.id)} 
+                            className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-rose-50 transition opacity-0 group-hover:opacity-100"
+                            title="刪除此筆記帳"
+                          >
+                            <Icons.Trash className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                     {transactions.length === 0 && (
@@ -790,12 +1005,13 @@
             </section>
           </main>
 
-          {/* 彈窗 A：新帳戶 */}
+          {}
+          {/* 彈窗 A：新帳戶 / 編輯帳戶 (二合一) */}
           {showAddAccountModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white border border-slate-100 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">建立聚寶存款帳戶</h3>
-                <form onSubmit={handleAddAccount} className="space-y-4">
+              <div className="bg-white border border-slate-100 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl animate-fade-in">
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">{editingAccount ? '✏️ 修改聚寶存款帳戶' : '🍯 建立聚寶存款帳戶'}</h3>
+                <form onSubmit={handleAccountSubmit} className="space-y-4">
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">帳戶名稱</label>
                     <input type="text" required placeholder="如：國泰數位戶" value={newAccName} onChange={e => setNewAccName(e.target.value)} className="w-full bg-slate-50 border border-slate-150 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
@@ -820,12 +1036,12 @@
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-400 block mb-1">初始存款額</label>
+                    <label className="text-[10px] text-slate-400 block mb-1">資金存款額</label>
                     <input type="number" required placeholder="0" value={newAccBalance} onChange={e => setNewAccBalance(e.target.value)} className="w-full bg-slate-50 border border-slate-150 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                   </div>
                   <div className="flex justify-end space-x-3 pt-4 border-t">
-                    <button type="button" onClick={() => setShowAddAccountModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
-                    <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認建立</button>
+                    <button type="button" onClick={() => { setShowAddAccountModal(false); setEditingAccount(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
+                    <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">{editingAccount ? '保存變更' : '確認建立'}</button>
                   </div>
                 </form>
               </div>
@@ -835,7 +1051,7 @@
           {/* 彈窗 B：股票/交易登錄 (完美整合 API 查詢功能) */}
           {showAddTxModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white border border-slate-100 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl">
+              <div className="bg-white border border-slate-100 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl animate-fade-in">
                 <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">登錄交易與帳務異動</h3>
                 <form onSubmit={handleAddTransaction} className="space-y-4">
                   <div>
@@ -924,6 +1140,37 @@
                   <div className="flex justify-end space-x-3 pt-4 border-t">
                     <button type="button" onClick={() => setShowAddTxModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
                     <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認並登記交易</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* 彈窗 C：修改持股 */}
+          {showEditPositionModal && editingPosition && (
+            <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white border border-slate-100 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl animate-fade-in">
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">✏️ 修改持股與行情部位</h3>
+                <div className="p-3 bg-slate-50 rounded-xl text-xs space-y-1">
+                  <p><strong>標的代號：</strong>{editingPosition.symbol}</p>
+                  <p><strong>標的名稱：</strong>{editingPosition.name}</p>
+                </div>
+                <form onSubmit={handleSaveEditPosition} className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">持有股數</label>
+                    <input type="number" required value={editPosShares} onChange={e => setEditPosShares(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">平均購入成本</label>
+                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">當前市價（現價）</label>
+                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" />
+                  </div>
+                  <div className="flex justify-end space-x-3 pt-4 border-t">
+                    <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
+                    <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">儲存修改</button>
                   </div>
                 </form>
               </div>
