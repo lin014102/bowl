@@ -196,26 +196,65 @@
         setTimeout(() => setNotification(null), 3500);
       };
 
-      // 智慧 Firebase 設定解析器 (相容 JSON, 變數宣告, 單雙引號等各種格式)
-      // 已修復：使用普通字串構建正則表達式，防範 Babel standalone 編譯錯誤
+      // --- 超強智慧容錯解析器 ---
+      // 專門修補漏複製的大括號、引號、欄位標籤等毀損格式
       const parseFirebaseConfig = (input) => {
         const cleanInput = input.trim();
         try {
           return JSON.parse(cleanInput);
         } catch (e) {
-          // 正則表達式動態提取常用金鑰，支持無引號、單引號、雙引號
+          // 正規表達式動態提取常用欄位，支持無引號、單引號、雙引號
           const extract = (key) => {
             const regex = new RegExp(key + '\\s*:\\s*["\'`]?([^"\'`\\\\\\s,]+)["\'`]?');
             const match = cleanInput.match(regex);
             return match ? match[1] : null;
           };
-          const apiKey = extract('apiKey');
-          const authDomain = extract('authDomain');
-          const projectId = extract('projectId');
-          const storageBucket = extract('storageBucket');
-          const messagingSenderId = extract('messagingSenderId');
-          const appId = extract('appId');
-          const measurementId = extract('measurementId');
+
+          let apiKey = extract('apiKey');
+          let projectId = extract('projectId');
+          let appId = extract('appId');
+          let authDomain = extract('authDomain');
+          let storageBucket = extract('storageBucket');
+          let messagingSenderId = extract('messagingSenderId');
+          let measurementId = extract('measurementId');
+
+          // --- 核心容錯升級：特徵正則匹配 (即使沒有 apiKey: 標籤也能完美救回) ---
+          if (!apiKey) {
+            // 搜尋以 AIzaSy 開頭的 Firebase/Google API Key
+            const apiKeyMatch = cleanInput.match(/(AIzaSy[A-Za-z0-9_-]+)/);
+            if (apiKeyMatch) apiKey = apiKeyMatch[1];
+          }
+
+          if (!appId) {
+            // 搜尋標準的 web appId 格式 (1:數字:web:雜湊值)
+            const appIdMatch = cleanInput.match(/(1:\d+:web:[a-f0-9]+)/);
+            if (appIdMatch) appId = appIdMatch[1];
+          }
+
+          if (!projectId) {
+            // 若無 projectId 但有 authDomain，從 authDomain (xxx.firebaseapp.com) 提取前綴
+            if (authDomain) {
+              projectId = authDomain.split('.')[0];
+            } else {
+              const domainMatch = cleanInput.match(/["']?([^"'\s]+)\.firebaseapp\.com["']?/);
+              if (domainMatch) {
+                projectId = domainMatch[1];
+                authDomain = domainMatch[1] + ".firebaseapp.com";
+              }
+            }
+          }
+
+          if (!messagingSenderId) {
+            // 尋找 11-13 位的發送者 ID 數字
+            const senderMatch = cleanInput.match(/\b(\d{11,13})\b/);
+            if (senderMatch) messagingSenderId = senderMatch[1];
+          }
+
+          // 重新補齊其他常用關聯欄位
+          if (projectId) {
+            if (!authDomain) authDomain = projectId + ".firebaseapp.com";
+            if (!storageBucket) storageBucket = projectId + ".firebasestorage.app";
+          }
 
           if (apiKey && projectId && appId) {
             return { apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId, measurementId };
@@ -750,7 +789,7 @@
               </div>
             )}
 
-            {/* 核心修復：在登入畫面中同步渲染 Notification，使得錯誤提醒能被看見 */}
+            {/* 在登入畫面中同步渲染 Notification，使得錯誤提醒能被看見 */}
             {notification && (
               <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
                 <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
@@ -1095,6 +1134,7 @@
     }
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
+    // 移除了錯誤的 root.render(App())，改用標準 React 18 JSX 的渲染模式，防止 Hooks Dispatcher 抓取失敗
     root.render(<App />);
   </script>
 </body>
