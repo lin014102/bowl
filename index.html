@@ -30,7 +30,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
   <style>
-    /* iOS 滿版優化，防止拉動回彈破壞版面 */
     body {
       background-color: #fcfdfe;
       -webkit-tap-highlight-color: transparent;
@@ -58,40 +57,59 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // --- 安全存儲包裝器 (safeStorage) ---
-    // 解決沙盒環境 (Canvas) 阻擋 localStorage 導致的無聲崩潰問題
+    // 結合 window.name 與 localStorage，徹底攻克沙盒 Iframe 儲存被清除的極限環境
     const memoryStorage = {};
     const safeStorage = {
       getItem(key) {
+        // 1. 優先從 window.name (重整不遺失) 讀取
+        try {
+          if (typeof window !== 'undefined' && window.name && window.name.startsWith('{')) {
+            const winData = JSON.parse(window.name);
+            if (winData[key] !== undefined) return winData[key];
+          }
+        } catch(e) {}
+        
+        // 2. 本地儲存備份
         try { 
           if (typeof window !== 'undefined' && window.localStorage) {
             return window.localStorage.getItem(key); 
           }
-        } catch (e) { 
-          console.warn("Storage access restricted, using memory storage instead.");
-        }
+        } catch (e) {}
         return memoryStorage[key] || null;
       },
       setItem(key, value) {
+        memoryStorage[key] = String(value);
+        // 1. 寫入 window.name
+        try {
+          let winData = {};
+          if (window.name && window.name.startsWith('{')) {
+            winData = JSON.parse(window.name);
+          }
+          winData[key] = String(value);
+          window.name = JSON.stringify(winData);
+        } catch(e) {}
+
+        // 2. 寫入 localStorage
         try { 
           if (typeof window !== 'undefined' && window.localStorage) {
             window.localStorage.setItem(key, value); 
-            return;
           }
-        } catch (e) { 
-          console.warn("Storage access restricted, using memory storage instead.");
-        }
-        memoryStorage[key] = String(value);
+        } catch (e) {}
       },
       removeItem(key) {
+        delete memoryStorage[key];
+        try {
+          if (window.name && window.name.startsWith('{')) {
+            const winData = JSON.parse(window.name);
+            delete winData[key];
+            window.name = JSON.stringify(winData);
+          }
+        } catch(e) {}
         try { 
           if (typeof window !== 'undefined' && window.localStorage) {
             window.localStorage.removeItem(key); 
-            return;
           }
-        } catch (e) { 
-          console.warn("Storage access restricted, using memory storage instead.");
-        }
-        delete memoryStorage[key];
+        } catch (e) {}
       }
     };
 
@@ -130,101 +148,47 @@
       Cloud: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" /></svg>
     };
 
-    // --- 1. 核心系統資料庫初始化（安全相容與強制覆蓋） ---
+    // --- 1. 全局配置解鎖 ---
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'jubaopen-default-app';
-    let systemDb = null;
-    let systemAuth = null;
-    try {
-      if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-        const sysConfig = JSON.parse(__firebase_config);
-        if (typeof firebase !== 'undefined') {
-          let sysApp;
-          if (firebase.apps.length === 0) {
-            sysApp = firebase.initializeApp(sysConfig);
-          } else {
-            if (firebase.apps.some(app => app.name === 'system_backup')) {
-              sysApp = firebase.app('system_backup');
-            } else {
-              sysApp = firebase.initializeApp(sysConfig, 'system_backup');
-            }
-          }
-          systemDb = sysApp.firestore();
-          systemAuth = sysApp.auth();
-        }
-      }
-    } catch (e) {
-      console.error("System Firebase Init Error:", e);
-    }
-
-    // --- 2. 同步初始化使用者自定義 Firebase 實體（關鍵修復：阻斷千分之一秒的時間差競爭） ---
-    const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
-    let isConfigPreset = false;
-    if (savedConfigStr) {
-      try {
-        const config = JSON.parse(savedConfigStr);
-        if (typeof firebase !== 'undefined') {
-          if (firebase.apps.length === 0 || (firebase.apps.length === 1 && firebase.apps[0].name === 'system_backup')) {
-            firebase.initializeApp(config);
-            isConfigPreset = true;
-          } else if (firebase.apps.some(app => app.name === '[DEFAULT]')) {
-            isConfigPreset = true;
-          }
-        }
-      } catch (e) {
-        console.error("Custom Firebase Sync Init Error:", e);
-      }
-    }
 
     function App() {
-      // 雲端資料暫存 Ref (確保切換用戶時能隨時取得雲端備份進行安全比對)
-      const systemBackupDataRef = useRef(null);
       const isWritingRef = useRef(false);
 
       const [loginLogoError, setLoginLogoError] = useState(false);
       const [headerLogoError, setHeaderLogoError] = useState(false);
 
-      // 解鎖 envAppId 變數，與全局 appId 同步
-      const envAppId = typeof __app_id !== 'undefined' ? __app_id : 'jubaopen-default-app';
-
-      // 雲端與帳務狀態
-      const [isFirebaseActive, setIsFirebaseActive] = useState(isConfigPreset);
+      // 雲端同步核心狀態
+      const [isFirebaseActive, setIsFirebaseActive] = useState(false);
       const [firebaseUser, setFirebaseUser] = useState(null);
       const [cloudSyncStatus, setCloudSyncStatus] = useState('local'); // local | syncing | synced | error
-      const [firebaseConfigInput, setFirebaseConfigInput] = useState(savedConfigStr || '');
+      const [firebaseConfigInput, setFirebaseConfigInput] = useState('');
       const [showSettingsModal, setShowSettingsModal] = useState(false);
       const [isDataLoaded, setIsDataLoaded] = useState(false);
-      
-      // 關鍵防覆蓋鎖：在用戶雲端資料下載/還原流程徹底完成前，禁止任何 Auto-Save 寫入
-      const [isUserFetched, setIsUserFetched] = useState(false);
+      const [isUserFetched, setIsUserFetched] = useState(false); // 安全防覆蓋寫入鎖
 
-      // 登入狀態管理
+      // 登入與財政數據
       const [currentUser, setCurrentUser] = useState(null);
       const [authMode, setAuthMode] = useState('login');
       const [usernameInput, setUsernameInput] = useState('');
       const [passwordInput, setPasswordInput] = useState('');
 
-      // 個人財政數據
       const [accounts, setAccounts] = useState([]);
       const [positions, setPositions] = useState([]);
       const [transactions, setTransactions] = useState([]);
       const [savingsGoal, setSavingsGoal] = useState(2000000);
 
-      // 匯率與行情同步
       const [rates, setRates] = useState(FALLBACK_RATES);
       const [stockLoading, setStockLoading] = useState(false);
 
-      // 系統導航控制
       const [activeTab, setActiveTab] = useState('dashboard');
       const [displayCurrency, setDisplayCurrency] = useState('TWD');
       const [hideValues, setHideValues] = useState(false);
       const [notification, setNotification] = useState(null);
 
-      // 各項對話框開關
       const [showAddAccountModal, setShowAddAccountModal] = useState(false);
       const [editingAccount, setEditingAccount] = useState(null);
       const [showAddTxModal, setShowAddTxModal] = useState(false);
 
-      // 行內編輯與持股直接調整
       const [isEditingGoal, setIsEditingGoal] = useState(false);
       const [tempGoal, setTempGoal] = useState('');
       const [editingPosition, setEditingPosition] = useState(null);
@@ -232,27 +196,6 @@
       const [editPosShares, setEditPosShares] = useState('');
       const [editPosAvgCost, setEditPosAvgCost] = useState('');
       const [editPosCurrentPrice, setEditPosCurrentPrice] = useState('');
-
-      // 補回先前遺失的儲蓄目標編輯與保存函數
-      const handleStartEditGoal = () => {
-        const currentGoalInDisplayCurrency = convertAmount(savingsGoal, 'TWD', displayCurrency);
-        const roundedGoal = displayCurrency === 'TWD' ? Math.round(currentGoalInDisplayCurrency) : parseFloat(currentGoalInDisplayCurrency.toFixed(2));
-        setTempGoal(roundedGoal);
-        setIsEditingGoal(true);
-      };
-
-      const handleSaveGoal = (e) => {
-        e.preventDefault();
-        const goalNum = parseFloat(tempGoal);
-        if (isNaN(goalNum) || goalNum <= 0) {
-          triggerNotification('請輸入正確的目標金額！', 'error');
-          return;
-        }
-        const goalInTWD = convertAmount(goalNum, displayCurrency, 'TWD');
-        setSavingsGoal(Math.round(goalInTWD));
-        setIsEditingGoal(false);
-        triggerNotification('目標金額更新成功 🌸', 'success');
-      };
 
       const [newAccName, setNewAccName] = useState('');
       const [newAccType, setNewAccType] = useState('BANK');
@@ -305,39 +248,30 @@
           let appId = extract('appId') || (cleanInput.match(/(1:\d+:web:[a-f0-9]+)/) || [])[1];
           let authDomain = extract('authDomain');
           let storageBucket = extract('storageBucket');
-          let messagingSenderId = extract('messagingSenderId');
 
           if (!projectId && authDomain) {
             projectId = authDomain.split('.')[0];
-          } else if (!projectId) {
-            const domainMatch = cleanInput.match(/["']?([^"'\s]+)\.firebaseapp\.com["']?/);
-            if (domainMatch) {
-              projectId = domainMatch[1];
-              authDomain = domainMatch[1] + ".firebaseapp.com";
-            }
           }
-
           if (projectId) {
             if (!authDomain) authDomain = projectId + ".firebaseapp.com";
             if (!storageBucket) storageBucket = projectId + ".firebasestorage.app";
           }
-
           if (apiKey && projectId && appId) {
-            return { apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId };
+            return { apiKey, authDomain, projectId, storageBucket, appId };
           }
         }
         throw new Error("無法解析您的設定，請確認貼上的程式碼包含完整的 apiKey, projectId 與 appId！");
       };
 
       // ----------------------------------------
-      // 4. 系統初始化與安全讀寫流建立
+      // 核心初始化：解決 Iframe 重新整理 Session 遺失的核心
       // ----------------------------------------
       useEffect(() => {
         const initSystem = async () => {
+          setIsDataLoaded(false);
           let activeConfig = null;
-          let usingPlatformConfig = false;
 
-          // 1. 優先嘗試讀取用戶手動貼入的 Firebase 金鑰
+          // 1. 優先嘗試自訂雲端金鑰
           const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
           if (savedConfigStr) {
             try {
@@ -346,13 +280,12 @@
             } catch (e) {}
           }
 
-          // 2. 若無，則嘗試偵測並綁定 Canvas 系統原生提供的資料庫配置
+          // 2. 備用：讀取系統原生內配專屬雲端
           if (!activeConfig && typeof __firebase_config !== 'undefined' && __firebase_config) {
             try {
               activeConfig = JSON.parse(__firebase_config);
-              usingPlatformConfig = true;
             } catch (e) {
-              console.error("解析 Canvas 平台配置失敗", e);
+              console.error("解析原生 Firebase 配置失敗", e);
             }
           }
 
@@ -365,53 +298,29 @@
               setIsFirebaseActive(true);
               setCloudSyncStatus('syncing');
 
-              // 執行匿名或系統預配認證
+              // 雲端靜默登入以滿足認證與安全讀寫規格
               let userCredential;
               if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                 userCredential = await firebase.auth().signInWithCustomToken(__initial_auth_token);
               } else {
                 userCredential = await firebase.auth().signInAnonymously();
               }
-              
-              const user = userCredential.user;
+              setFirebaseUser(userCredential.user);
 
-              // 連線至平台專屬的 Firestore 集中儲存點
-              const db = firebase.firestore();
-              const docRef = db.doc(`artifacts/${envAppId}/users/${user.uid}/profile/financialData`);
-              const doc = await docRef.get();
-              if (doc.exists) {
-                systemBackupDataRef.current = doc.data();
-                console.log("已成功由雲端安全載入備份資料！");
-              }
-
-              // 嘗試自動還原先前的登入 Session
+              // 3. Iframe 頂級重整生存防護：自動檢查是否有 session 緩衝區的 remembered user
               const remembered = safeStorage.getItem('jubaopen_remembered_user');
               if (remembered) {
-                handleLoginUser(remembered, true);
+                await handleAutoLoginCloud(remembered);
               } else {
-                // 如果是自定義雲端且有快取，還原信箱密碼登入
-                const cachedUser = safeStorage.getItem('jubaopen_cached_username');
-                const cachedPass = safeStorage.getItem('jubaopen_cached_password');
-                if (cachedUser && cachedPass && !usingPlatformConfig) {
-                  const email = cachedUser.includes('@') ? cachedUser : `${cachedUser}@jubaopen.com`;
-                  try {
-                    const cred = await firebase.auth().signInWithEmailAndPassword(email, cachedPass);
-                    setCurrentUser({ uid: cred.user.uid, email: cred.user.email });
-                  } catch (err) {
-                    console.error("Auto login failed", err);
-                  }
-                }
                 setIsDataLoaded(true);
               }
 
             } catch (err) {
-              console.error("Firebase 初始化失敗，自動啟用純本機備份模式", err);
-              setIsFirebaseActive(false);
-              setCloudSyncStatus('local');
-              loadFallbackLocalData();
+              console.error("Firebase 初始化失敗，使用本地安全模式", err);
+              handleLocalFallback();
             }
           } else {
-            loadFallbackLocalData();
+            handleLocalFallback();
           }
 
           fetchLiveRates();
@@ -420,45 +329,27 @@
         initSystem();
       }, []);
 
-      // 監聽並自動同步自定義 Firebase 登入狀態 (Email / Pass 模式)
-      useEffect(() => {
-        if (!isFirebaseActive || typeof firebase === 'undefined') return;
-        const unsubscribe = firebase.auth().onAuthStateChanged(async (user) => {
-          if (user) {
-            setFirebaseUser(user);
-            setCurrentUser({ uid: user.uid, email: user.email || 'anonymous@jubaopen.com' });
-            await fetchCloudData(user.uid);
-          } else {
-            setFirebaseUser(null);
-            setCurrentUser(null);
-            setIsUserFetched(false);
-            setIsDataLoaded(true);
-          }
-        }, (error) => {
-          console.error("Auth 監聽異常", error);
-          setCloudSyncStatus('error');
-        });
-        return () => unsubscribe();
-      }, [isFirebaseActive]);
-
-      // 當完全離線/本地時的 Session 還原
-      const loadFallbackLocalData = () => {
+      const handleLocalFallback = () => {
+        setIsFirebaseActive(false);
         setCloudSyncStatus('local');
         const remembered = safeStorage.getItem('jubaopen_remembered_user');
         if (remembered) {
-          handleLoginUser(remembered, true);
+          handleLoginLocalOffline(remembered);
         } else {
           setIsDataLoaded(true);
         }
       };
 
-      // 載入自定義雲端專屬資產 (Email Auth 用戶單獨調用)
-      const fetchCloudData = async (uid) => {
-        if (typeof firebase === 'undefined') return;
+      // ----------------------------------------
+      // 雲端實名免密/帶密自動登入載入 (永久保存解決方案)
+      // ----------------------------------------
+      const handleAutoLoginCloud = async (username) => {
         setCloudSyncStatus('syncing');
         try {
           const db = firebase.firestore();
-          const docRef = db.doc(`artifacts/${envAppId}/users/${uid}/profile/financialData`);
+          const cleanUser = username.trim().toLowerCase();
+          // 將所有用戶資料保存在公共安全沙盒路徑，繞開 Iframe Anonymous UID 不持久的缺陷！
+          const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
           const doc = await docRef.get();
           if (doc.exists) {
             const data = doc.data();
@@ -466,237 +357,186 @@
             setPositions(data.positions || []);
             setTransactions(data.transactions || []);
             setSavingsGoal(data.savingsGoal || 2000000);
-            triggerNotification("☁️ 雲端同步完成，資產更新成功！", 'success');
+            setCurrentUser({ uid: `cloud_${cleanUser}`, displayName: username });
+            setIsUserFetched(true);
+            setCloudSyncStatus('synced');
           } else {
-            // 無雲端存檔時移植本地
-            const remembered = safeStorage.getItem('jubaopen_remembered_user') || 'default_user';
-            const localLegacyData = safeStorage.getItem(`jubaopen_user_data_${remembered}`);
-            if (localLegacyData) {
-              const parsed = JSON.parse(localLegacyData);
-              setAccounts(parsed.accounts || []);
-              setPositions(parsed.positions || []);
-              setTransactions(parsed.transactions || []);
-              setSavingsGoal(parsed.savingsGoal || 2000000);
-            } else {
-              setAccounts(DEFAULT_USER_DATA.accounts);
-              setPositions(DEFAULT_USER_DATA.positions);
-              setTransactions(DEFAULT_USER_DATA.transactions);
-              setSavingsGoal(DEFAULT_USER_DATA.savingsGoal);
-            }
+            safeStorage.removeItem('jubaopen_remembered_user');
           }
-          setIsUserFetched(true); // 成功取回資料，解鎖寫入鎖
-          setIsDataLoaded(true);
-          setCloudSyncStatus('synced');
         } catch (e) {
-          console.error("讀取自定義雲端失敗", e);
+          console.error("雲端自動登入出錯", e);
           setCloudSyncStatus('error');
+        } finally {
           setIsDataLoaded(true);
         }
       };
 
-      // ----------------------------------------
-      // 6. 雲端雙軌同步 (寫入機制，具備防競態鎖)
-      // ----------------------------------------
-      useEffect(() => {
-        if (!isDataLoaded || !currentUser || !isUserFetched) return;
-        if (isWritingRef.current) return;
-
-        const syncData = async () => {
-          isWritingRef.current = true;
-          const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
-
-          if (isFirebaseActive && firebaseUser && typeof firebase !== 'undefined' && firebase.auth().currentUser && safeStorage.getItem('jubaopen_firebase_config')) {
-            // A. 自定義雲端寫入流
-            setCloudSyncStatus('syncing');
-            try {
-              const db = firebase.firestore();
-              await db.doc(`artifacts/${envAppId}/users/${firebaseUser.uid}/profile/financialData`).set(userPayload, { merge: true });
-              setCloudSyncStatus('synced');
-            } catch (err) {
-              console.error("雲端存檔寫入失敗", err);
-              setCloudSyncStatus('error');
-            }
-          } else {
-            // B. 本地與平台原生備份寫入流
-            const username = currentUser.displayName || currentUser.uid;
-            safeStorage.setItem(`jubaopen_user_data_${username}`, JSON.stringify(userPayload));
-
-            // 如果平台 Firebase 可用，則在背景向單一共享文檔寫入以使用者名稱映射的備份
-            if (typeof firebase !== 'undefined' && firebase.auth().currentUser) {
-              setCloudSyncStatus('syncing');
-              try {
-                const uid = firebase.auth().currentUser.uid;
-                const docRef = firebase.firestore().doc(`artifacts/${envAppId}/users/${uid}/profile/financialData`);
-                await docRef.set({
-                  accountsData: {
-                    [username]: userPayload
-                  }
-                }, { merge: true });
-                setCloudSyncStatus('synced');
-              } catch (e) {
-                console.error("平台自動備份寫入失敗", e);
-                setCloudSyncStatus('local');
-              }
-            } else {
-              setCloudSyncStatus('local');
-            }
-          }
-          isWritingRef.current = false;
-        };
-
-        const delayDebounce = setTimeout(syncData, 500);
-        return () => clearTimeout(delayDebounce);
-      }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser, isUserFetched, isFirebaseActive, firebaseUser]);
-
-      // ----------------------------------------
-      // 7. 註冊與登入核心
-      // ----------------------------------------
-      const handleAuthSubmit = async (e) => {
-        e.preventDefault();
-        const username = usernameInput.trim();
-        const password = passwordInput;
-        if (!username || !password) { triggerNotification('請輸入帳號與密碼', 'error'); return; }
-
-        try {
-          if (isFirebaseActive && typeof firebase !== 'undefined' && firebase.auth() && safeStorage.getItem('jubaopen_firebase_config')) {
-            // 自定義雲端登入註冊
-            setCloudSyncStatus('syncing');
-            setIsUserFetched(false); // 鎖定防寫
-            const email = username.includes('@') ? username : `${username}@jubaopen.com`;
-            if (authMode === 'register') {
-              const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
-              setCurrentUser({ uid: cred.user.uid, email: cred.user.email });
-              safeStorage.setItem('jubaopen_cached_username', username);
-              safeStorage.setItem('jubaopen_cached_password', password);
-              triggerNotification('聚寶盆雲端帳號註冊成功！🎉', 'success');
-            } else {
-              const cred = await firebase.auth().signInWithEmailAndPassword(email, password);
-              setCurrentUser({ uid: cred.user.uid, email: cred.user.email });
-              safeStorage.setItem('jubaopen_cached_username', username);
-              safeStorage.setItem('jubaopen_cached_password', password);
-              triggerNotification('登入雲端成功！☁️', 'success');
-            }
-          } else {
-            // 本地帳號模擬模式 (串聯平台自動備份，防重新部署遺失)
-            const localUsers = JSON.parse(safeStorage.getItem('jubaopen_local_users') || '{}');
-            
-            if (authMode === 'register') {
-              if (localUsers[username]) {
-                triggerNotification('此帳號已存在，請直接登入', 'error');
-                return;
-              }
-              localUsers[username] = password;
-              safeStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
-
-              // 背景寫入密碼金鑰註冊至平台雲端備份，以便跨網域還原
-              if (typeof firebase !== 'undefined' && firebase.auth().currentUser) {
-                const uid = firebase.auth().currentUser.uid;
-                await firebase.firestore().doc(`artifacts/${envAppId}/users/${uid}/profile/financialData`).set({
-                  usersRegistry: { [username]: password }
-                }, { merge: true });
-              }
-
-              handleLoginUser(username, true);
-              triggerNotification('帳號註冊成功！資產已備份至雲端 🎉', 'success');
-            } else {
-              // 驗證本機註冊密碼 或 平台雲端密碼
-              let isValid = localUsers[username] === password;
-              if (!isValid && systemBackupDataRef.current && systemBackupDataRef.current.usersRegistry) {
-                isValid = systemBackupDataRef.current.usersRegistry[username] === password;
-              }
-
-              if (isValid || (username === 'admin' && password === 'admin')) {
-                // 雲端有本地沒有時，同步寫回本地方便離線登入
-                localUsers[username] = password;
-                safeStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
-                handleLoginUser(username, true);
-              } else {
-                triggerNotification('帳號或密碼輸入錯誤，未註冊請先點選下方「註冊」', 'error');
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Auth Error:", error);
-          triggerNotification(error.message || '發生未知錯誤', 'error');
-          setCloudSyncStatus('error');
-        }
-      };
-
-      const handleLoginUser = (username, remember) => {
-        setIsUserFetched(false); // 核心修復：先上鎖，防止狀態被空資料異步重設覆蓋
-        setCurrentUser({ uid: `local_${username}`, displayName: username });
-        if (remember) safeStorage.setItem('jubaopen_remembered_user', username);
-
-        let userData = null;
-
-        // 1. 優先從平台雲端多帳戶備份包還原
-        if (systemBackupDataRef.current && systemBackupDataRef.current.accountsData && systemBackupDataRef.current.accountsData[username]) {
-          userData = systemBackupDataRef.current.accountsData[username];
-          console.log(`已成功從 Canvas 備份中完整還原用戶「${username}」之數據！`);
-        } 
-        // 2. 否則從本機 localStorage 快照還原
-        else {
-          const localDataStr = safeStorage.getItem(`jubaopen_user_data_${username}`);
-          if (localDataStr) {
-            try { userData = JSON.parse(localDataStr); } catch (e) {}
-          }
-        }
-
-        if (userData) {
-          setAccounts(userData.accounts || []);
-          setPositions(userData.positions || []);
-          setTransactions(userData.transactions || []);
-          setSavingsGoal(userData.savingsGoal || 2000000);
+      const handleLoginLocalOffline = (username) => {
+        const cleanUser = username.trim().toLowerCase();
+        const localDataStr = safeStorage.getItem(`jubaopen_user_data_${cleanUser}`);
+        if (localDataStr) {
+          try {
+            const data = JSON.parse(localDataStr);
+            setAccounts(data.accounts || []);
+            setPositions(data.positions || []);
+            setTransactions(data.transactions || []);
+            setSavingsGoal(data.savingsGoal || 2000000);
+          } catch (e) {}
         } else {
-          // 全新帳戶加載範例資料
           setAccounts(DEFAULT_USER_DATA.accounts);
           setPositions(DEFAULT_USER_DATA.positions);
           setTransactions(DEFAULT_USER_DATA.transactions);
           setSavingsGoal(DEFAULT_USER_DATA.savingsGoal);
         }
-
-        setIsUserFetched(true); // 還原完成，正式解開自動儲存寫入權限！
+        setCurrentUser({ uid: `local_${cleanUser}`, displayName: username });
+        setIsUserFetched(true);
         setIsDataLoaded(true);
-        triggerNotification(`歡迎回來，您的聚寶盆已開啟 🌸`, 'success');
+      };
+
+      // ----------------------------------------
+      // 雲端實名註冊與登入提交
+      // ----------------------------------------
+      const handleAuthSubmit = async (e) => {
+        e.preventDefault();
+        const username = usernameInput.trim();
+        const cleanUser = username.toLowerCase();
+        const password = passwordInput;
+        if (!username || !password) { triggerNotification('請輸入帳號與密碼', 'error'); return; }
+
+        setIsDataLoaded(false);
+        try {
+          if (isFirebaseActive && typeof firebase !== 'undefined') {
+            const db = firebase.firestore();
+            const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
+            const doc = await docRef.get();
+
+            if (authMode === 'register') {
+              if (doc.exists) {
+                triggerNotification('此帳號已存在，請更換名稱或直接登入！', 'error');
+                setIsDataLoaded(true);
+                return;
+              }
+              
+              // 在雲端建立此實名使用者的專屬資產包檔案
+              const newPayload = {
+                username: username,
+                password: password,
+                accounts: DEFAULT_USER_DATA.accounts,
+                positions: DEFAULT_USER_DATA.positions,
+                transactions: DEFAULT_USER_DATA.transactions,
+                savingsGoal: 2000000,
+                updatedAt: new Date().toISOString()
+              };
+              await docRef.set(newPayload);
+
+              setAccounts(DEFAULT_USER_DATA.accounts);
+              setPositions(DEFAULT_USER_DATA.positions);
+              setTransactions(DEFAULT_USER_DATA.transactions);
+              setSavingsGoal(2000000);
+              setCurrentUser({ uid: `cloud_${cleanUser}`, displayName: username });
+              safeStorage.setItem('jubaopen_remembered_user', username);
+              setIsUserFetched(true);
+              setCloudSyncStatus('synced');
+              triggerNotification('聚寶盆雲端帳號註冊完成並登入！🎉', 'success');
+            } else {
+              // 登入比對
+              if (!doc.exists) {
+                triggerNotification('此帳號不存在，請點選註冊建立帳戶。', 'error');
+                setIsDataLoaded(true);
+                return;
+              }
+              const data = doc.data();
+              if (data.password !== password) {
+                triggerNotification('密碼輸入有誤，請重新輸入！', 'error');
+                setIsDataLoaded(true);
+                return;
+              }
+
+              // 密碼正確，完美還原先前儲存的數據
+              setAccounts(data.accounts || []);
+              setPositions(data.positions || []);
+              setTransactions(data.transactions || []);
+              setSavingsGoal(data.savingsGoal || 2000000);
+              setCurrentUser({ uid: `cloud_${cleanUser}`, displayName: username });
+              safeStorage.setItem('jubaopen_remembered_user', username);
+              setIsUserFetched(true);
+              setCloudSyncStatus('synced');
+              triggerNotification('登入雲端成功！您的聚寶資產已完整載入 🌸', 'success');
+            }
+          } else {
+            // 本地離線存檔與註冊模擬
+            const localUsers = JSON.parse(safeStorage.getItem('jubaopen_local_users') || '{}');
+            if (authMode === 'register') {
+              if (localUsers[cleanUser]) {
+                triggerNotification('本機已存在此帳號，請直接登入！', 'error');
+                setIsDataLoaded(true);
+                return;
+              }
+              localUsers[cleanUser] = password;
+              safeStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
+
+              const newPayload = {
+                accounts: DEFAULT_USER_DATA.accounts,
+                positions: DEFAULT_USER_DATA.positions,
+                transactions: DEFAULT_USER_DATA.transactions,
+                savingsGoal: 2000000
+              };
+              safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(newPayload));
+
+              setAccounts(DEFAULT_USER_DATA.accounts);
+              setPositions(DEFAULT_USER_DATA.positions);
+              setTransactions(DEFAULT_USER_DATA.transactions);
+              setSavingsGoal(2000000);
+              setCurrentUser({ uid: `local_${cleanUser}`, displayName: username });
+              safeStorage.setItem('jubaopen_remembered_user', username);
+              setIsUserFetched(true);
+              triggerNotification('本地帳號註冊成功！', 'success');
+            } else {
+              if (localUsers[cleanUser] !== password) {
+                triggerNotification('本機帳號或密碼錯誤！', 'error');
+                setIsDataLoaded(true);
+                return;
+              }
+              handleLoginLocalOffline(username);
+              safeStorage.setItem('jubaopen_remembered_user', username);
+              triggerNotification('登入本地成功！', 'success');
+            }
+          }
+        } catch (error) {
+          console.error("驗證與數據拉取錯誤", error);
+          triggerNotification('連線出錯：' + error.message, 'error');
+        } finally {
+          setIsDataLoaded(true);
+        }
       };
 
       const handleLogout = () => {
-        if (isFirebaseActive && typeof firebase !== 'undefined' && firebase.auth() && safeStorage.getItem('jubaopen_firebase_config')) {
-          firebase.auth().signOut().catch(console.error);
-        }
         setCurrentUser(null);
         setIsUserFetched(false);
         safeStorage.removeItem('jubaopen_remembered_user');
-        safeStorage.removeItem('jubaopen_cached_username');
-        safeStorage.removeItem('jubaopen_cached_password');
         setUsernameInput('');
         setPasswordInput('');
         setAccounts([]);
         setPositions([]);
         setTransactions([]);
-        setIsDataLoaded(false);
-        triggerNotification('聚寶盆已安全上鎖 🔒', 'success');
+        setIsDataLoaded(true);
+        triggerNotification('已安全退出並鎖定聚寶盆 🔒', 'success');
       };
 
       const handleSaveSettings = async (e) => {
         e.preventDefault();
         const val = firebaseConfigInput.trim();
-        
         if (!val) {
           safeStorage.removeItem('jubaopen_firebase_config');
-          safeStorage.removeItem('jubaopen_cached_username');
-          safeStorage.removeItem('jubaopen_cached_password');
           setIsFirebaseActive(false);
           setShowSettingsModal(false);
-          triggerNotification('已清除自訂設定，返回本機對帳模式', 'success');
-          loadFallbackLocalData();
+          triggerNotification('已清除自訂金鑰，重歸本地快照模式', 'success');
+          handleLocalFallback();
           return;
         }
-
         try {
           const config = parseFirebaseConfig(val);
           safeStorage.setItem('jubaopen_firebase_config', JSON.stringify(config));
-          
           if (typeof firebase !== 'undefined') {
             if (firebase.apps.length > 0) {
               await Promise.all(firebase.apps.map(app => app.delete()));
@@ -706,17 +546,62 @@
             setCloudSyncStatus('syncing');
             await firebase.auth().signInAnonymously();
           }
-          
           setShowSettingsModal(false);
-          triggerNotification('雲端同步金鑰配置成功！✨', 'success');
+          triggerNotification('自訂金鑰綁定成功，立即進行同步！☁️', 'success');
+          if (currentUser) {
+            await handleAutoLoginCloud(currentUser.displayName);
+          }
         } catch (err) {
-          console.error("自訂雲端設定失敗：", err);
-          triggerNotification('設定失敗：' + (err.message || '格式不正確'), 'error');
+          triggerNotification('金鑰格式有誤：' + err.message, 'error');
         }
       };
 
       // ----------------------------------------
-      // 8. 匯率與行情串接
+      // 即時背景雲端同步守護程序 (Auto-Save on mutation)
+      // ----------------------------------------
+      useEffect(() => {
+        if (!isDataLoaded || !currentUser || !isUserFetched) return;
+        if (isWritingRef.current) return;
+
+        const syncData = async () => {
+          isWritingRef.current = true;
+          const cleanUser = currentUser.displayName.toLowerCase();
+
+          if (isFirebaseActive && typeof firebase !== 'undefined') {
+            setCloudSyncStatus('syncing');
+            try {
+              const db = firebase.firestore();
+              const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
+              
+              // 精準更新使用者變更，不破壞使用者密碼與註冊屬性
+              await docRef.set({
+                accounts: accounts,
+                positions: positions,
+                transactions: transactions,
+                savingsGoal: savingsGoal,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+              
+              setCloudSyncStatus('synced');
+            } catch (err) {
+              console.error("即時雲端自動備份失敗：", err);
+              setCloudSyncStatus('error');
+            }
+          } else {
+            // 本地與 window.name 雙規備份
+            const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
+            safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(userPayload));
+            setCloudSyncStatus('local');
+          }
+          isWritingRef.current = false;
+        };
+
+        const delayDebounce = setTimeout(syncData, 500);
+        return () => clearTimeout(delayDebounce);
+      }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser, isUserFetched, isFirebaseActive]);
+
+      // ----------------------------------------
+      // 匯率與行情同步
       // ----------------------------------------
       const fetchLiveRates = async () => {
         try {
@@ -802,7 +687,7 @@
       };
 
       // ----------------------------------------
-      // 9. 財務與分析計算
+      // 財務與分析計算
       // ----------------------------------------
       const positionsAnalysis = useMemo(() => {
         let totalValue = 0, totalCost = 0, totalTW = 0, totalUS = 0;
@@ -850,7 +735,7 @@
       }, [assetAllocation]);
 
       // ----------------------------------------
-      // 10. 交易異動登錄
+      // 交易異動登錄
       // ----------------------------------------
       const handleAccountSubmit = (e) => {
         e.preventDefault();
@@ -918,6 +803,26 @@
       const handleDeletePosition = (posId, symbol) => {
         setPositions(positions.filter(p => p.id !== posId));
         triggerNotification(`已移除 ${symbol} 持股投資部位`, 'success');
+      };
+
+      const handleStartEditGoal = () => {
+        const currentGoalInDisplayCurrency = convertAmount(savingsGoal, 'TWD', displayCurrency);
+        const roundedGoal = displayCurrency === 'TWD' ? Math.round(currentGoalInDisplayCurrency) : parseFloat(currentGoalInDisplayCurrency.toFixed(2));
+        setTempGoal(roundedGoal);
+        setIsEditingGoal(true);
+      };
+
+      const handleSaveGoal = (e) => {
+        e.preventDefault();
+        const goalNum = parseFloat(tempGoal);
+        if (isNaN(goalNum) || goalNum <= 0) {
+          triggerNotification('請輸入正確的目標金額！', 'error');
+          return;
+        }
+        const goalInTWD = convertAmount(goalNum, displayCurrency, 'TWD');
+        setSavingsGoal(Math.round(goalInTWD));
+        setIsEditingGoal(false);
+        triggerNotification('目標金額更新成功 🌸', 'success');
       };
 
       const handleAddTransaction = (e) => {
@@ -1019,7 +924,7 @@
       };
 
       // ----------------------------------------
-      // 11. UI 渲染
+      // UI 渲染 (未登入畫面)
       // ----------------------------------------
       if (!currentUser) {
         return (
@@ -1039,29 +944,30 @@
               {!isDataLoaded ? (
                 <div className="py-12 flex flex-col items-center justify-center space-y-4 animate-fade-in">
                   <div className="w-8 h-8 border-4 border-sky-200 border-t-sky-500 rounded-full animate-spin"></div>
-                  <p className="text-xs text-stone-400 font-bold animate-pulse">正在還原您的聚寶盆資產，請稍候...</p>
+                  <p className="text-xs text-stone-400 font-bold animate-pulse">正在開啟您的聚寶盆，安全連線中...</p>
                 </div>
               ) : (
                 <form onSubmit={handleAuthSubmit} className="space-y-4 animate-fade-in">
+                  <div className="p-3 bg-blue-50 border border-blue-100/60 rounded-xl text-[10.5px] text-blue-700 leading-relaxed">
+                    💡 <strong>提示：</strong>在部分瀏覽器預覽環境下會阻擋本機 Cookie。<strong>請在此註冊您自訂的帳號與密碼</strong>，未來不論如何重整、在任何裝置上，只要輸入相同帳密即可一秒取回您完整的記帳與資產資料！
+                  </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] text-stone-400 font-bold uppercase block">
-                      {isFirebaseActive ? '雲端帳戶 (信箱格式)' : '本機帳戶名稱'}
-                    </label>
-                    <input type="text" required placeholder={isFirebaseActive ? "例如: account@jubaopen.com" : "請輸入本機帳戶名稱"} value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
+                    <label className="text-[10px] text-stone-400 font-bold uppercase block">自訂聚寶帳戶名稱</label>
+                    <input type="text" required placeholder="例如: admin 或您個人的姓名" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] text-stone-400 font-bold uppercase block">安全密碼</label>
                     <input type="password" required placeholder="請輸入密碼" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
                   </div>
                   <button type="submit" className={`w-full py-3 text-white font-semibold text-xs rounded-2xl transition-all shadow-md ${isFirebaseActive ? 'bg-sky-500 hover:bg-sky-600 shadow-sky-500/20' : 'bg-[#9a8c7d] hover:bg-[#8d7f70] shadow-[#9a8c7d]/20'}`}>
-                    {authMode === 'login' ? '開啟聚寶盆 🍯' : '註冊新帳號 🎉'}
+                    {authMode === 'login' ? '開啟聚寶盆 🍯' : '快速註冊並解鎖雲端 ☁️'}
                   </button>
                   <div className="flex justify-between items-center text-xs px-1 pt-2">
                     <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className={`${isFirebaseActive ? 'text-sky-600' : 'text-[#9a8c7d]'} font-bold hover:underline`}>
-                      {authMode === 'login' ? '註冊新帳號' : '返回登入'}
+                      {authMode === 'login' ? '新用戶？點此快速註冊' : '已有帳號？返回登入'}
                     </button>
                     <button type="button" onClick={() => setShowSettingsModal(true)} className="text-stone-400 hover:text-stone-700 font-bold flex items-center gap-1">
-                      {isFirebaseActive ? "⚙️ 自訂雲端設定" : "☁️ 啟用自訂雲端同步"}
+                      ⚙️ 自訂專屬資料庫
                     </button>
                   </div>
                 </form>
@@ -1073,10 +979,10 @@
               💡 <strong>iOS 滿版教學：</strong>用 Safari 開啟後，點擊底部「分享」圖示並選擇「加入主畫面」，即可換上高質感圖示享受原生 PWA 頂級體驗！
             </div>
 
-            {/* 雲端設定彈窗 (首頁) */}
+            {/* 雲端設定彈窗 (未登入) */}
             {showSettingsModal && (
               <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl">
+                <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl animate-fade-in">
                   <div className="flex justify-between items-center border-b pb-2">
                     <h3 className="text-xs font-bold text-stone-800">⚙️ 自訂 Firebase 雲端同步</h3>
                     <button type="button" onClick={() => setShowSettingsModal(false)} className="text-stone-400">✕</button>
@@ -1106,7 +1012,9 @@
         );
       }
 
-      // 登入後的主畫面
+      // ----------------------------------------
+      // UI 渲染 (登入後主畫面)
+      // ----------------------------------------
       return (
         <div className="min-h-screen bg-[#fcfdfe] text-slate-600 font-sans flex flex-col antialiased">
           
@@ -1123,10 +1031,10 @@
 
             <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
               <button type="button" onClick={() => setShowSettingsModal(true)} className="flex items-center shrink-0">
-                {cloudSyncStatus === 'synced' && <span className="text-[10px] sm:text-xs bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>☁️</span><span className="hidden sm:inline">雲端已同步</span></span>}
-                {cloudSyncStatus === 'syncing' && <span className="text-[10px] sm:text-xs bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1 animate-pulse"><span>☁️</span><span className="hidden sm:inline">儲存同步中</span></span>}
-                {cloudSyncStatus === 'local' && <span className="text-[10px] sm:text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>📱</span><span className="hidden sm:inline">本地快照模式</span></span>}
-                {cloudSyncStatus === 'error' && <span className="text-[10px] sm:text-xs bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>⚠️</span><span className="hidden sm:inline">連線同步異常</span></span>}
+                {cloudSyncStatus === 'synced' && <span className="text-[10px] sm:text-xs bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>☁️</span><span className="hidden sm:inline">實名雲端已同步</span></span>}
+                {cloudSyncStatus === 'syncing' && <span className="text-[10px] sm:text-xs bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1 animate-pulse"><span>☁️</span><span className="hidden sm:inline">資料庫儲存中</span></span>}
+                {cloudSyncStatus === 'local' && <span className="text-[10px] sm:text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>📱</span><span className="hidden sm:inline">本地快照備份</span></span>}
+                {cloudSyncStatus === 'error' && <span className="text-[10px] sm:text-xs bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>⚠️</span><span className="hidden sm:inline">網路連線異常</span></span>}
               </button>
 
               <button onClick={() => setHideValues(!hideValues)} className="p-1 text-slate-400 hover:text-sky-500 transition-colors shrink-0">
@@ -1144,14 +1052,6 @@
               </button>
             </div>
           </header>
-
-          {notification && (
-            <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
-              <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
-                <span>{notification.message}</span>
-              </div>
-            </div>
-          )}
 
           <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col lg:flex-row gap-8">
             <section className="w-full lg:w-[410px] shrink-0 space-y-6">
@@ -1366,7 +1266,7 @@
                     <div><label className="text-[10px] text-slate-400 block mb-1">類別</label><select value={newAccType} onChange={e => setNewAccType(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs focus:outline-none"><option value="BANK">銀行存款</option><option value="INVESTMENT">證券交割</option><option value="CASH">手存現金</option></select></div>
                     <div><label className="text-[10px] text-slate-400 block mb-1">幣別</label><select value={newAccCurrency} onChange={e => setNewAccCurrency(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs focus:outline-none"><option value="TWD">TWD</option><option value="USD">USD</option><option value="JPY">JPY</option><option value="EUR">EUR</option></select></div>
                   </div>
-                  <div><label className="text-[10px] text-slate-400 block mb-1">資金存款額</label><input type="number" required value={newAccBalance} onChange={e => setNewAccBalance(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" /></div>
+                  <div><label className="text-[10px] text-slate-400 block mb-1">資金存款額</label><input type="number" required value={newAccBalance} onChange={e => setNewAccBalance(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none" /></div>
                   <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShowAddAccountModal(false); setEditingAccount(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button><button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">{editingAccount ? '保存' : '建立'}</button></div>
                 </form>
               </div>
@@ -1490,11 +1390,11 @@
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">每股平均買入成本 ({editingPosition.market === 'US' ? 'USD' : 'TWD'})</label>
-                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none" />
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">目前市場現價 ({editingPosition.market === 'US' ? 'USD' : 'TWD'})</label>
-                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none" />
                   </div>
                   <div className="flex justify-end gap-2 border-t pt-3">
                     <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
