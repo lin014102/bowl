@@ -197,17 +197,21 @@
       };
 
       // --- 超強智慧容錯解析器 ---
-      // 專門修補漏複製的大括號、引號、欄位標籤等毀損格式
+      // 專門修補漏複製的大括號、引號、欄位標籤等毀損格式，並清洗不尋常空白
       const parseFirebaseConfig = (input) => {
-        const cleanInput = input.trim();
+        // 核心修復：替換非斷行空白字符 (\u00a0)，防止變數名稱解析出錯
+        const cleanInput = input.replace(/\u00a0/g, ' ').trim();
         try {
           return JSON.parse(cleanInput);
         } catch (e) {
           // 正規表達式動態提取常用欄位，支持無引號、單引號、雙引號
           const extract = (key) => {
-            const regex = new RegExp(key + '\\s*:\\s*["\'`]?([^"\'`\\\\\\s,]+)["\'`]?');
+            const regex = new RegExp(key + '\\s*:\\s*["\'`]?([^"\'`\\r\\n,;]+)["\'`]?');
             const match = cleanInput.match(regex);
-            return match ? match[1] : null;
+            if (match) {
+              return match[1].replace(/["'\}\s,;]+$/, '').trim();
+            }
+            return null;
           };
 
           let apiKey = extract('apiKey');
@@ -417,7 +421,22 @@
           }
         } catch (error) {
           console.error("Auth Error:", error);
-          triggerNotification('登入/註冊失敗：' + (error.message || '發生未知錯誤'), 'error');
+          
+          // 核心修復：解析 Firebase Auth 控制台未設定 Email/Password Provider 的特定錯誤
+          let friendlyError = error.message || '發生未知錯誤';
+          if (error.code === 'auth/configuration-not-found') {
+            friendlyError = '⚠️ 您的 Firebase 控制台尚未啟用「電子郵件/密碼」登入！請至 Firebase 網頁 > Authentication > Sign-in method 點選啟用此服務，即可完成同步登入！';
+          } else if (error.code === 'auth/invalid-api-key') {
+            friendlyError = '⚠️ 無效的 Firebase API 金鑰，請重新檢查您的金鑰。';
+          } else if (error.code === 'auth/email-already-in-use') {
+            friendlyError = '⚠️ 此電子信箱已被註冊，請直接進行登入。';
+          } else if (error.code === 'auth/weak-password') {
+            friendlyError = '⚠️ 密碼強度不足，請至少輸入 6 位數以上的密碼。';
+          } else if (error.code === 'auth/invalid-credential') {
+            friendlyError = '⚠️ 帳號或密碼輸入錯誤，請確認。';
+          }
+          
+          triggerNotification('登入/註冊失敗：' + friendlyError, 'error');
           setCloudSyncStatus('error');
         }
       };
@@ -1119,7 +1138,7 @@
                     onChange={e => setFirebaseConfigInput(e.target.value)} 
                     className="w-full h-36 bg-stone-50 border rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none" 
                   />
-                  <p className="text-[10px] text-stone-400">※ 提示：若想恢復為極速本機離線模式，請將上方輸入框清空後點擊更新即可。※</p>
+                  <p className="text-[10px] text-stone-400 font-bold">※ 提示：若想恢復為極速本機離線模式，請將上方輸入框清空後點擊更新即可。※</p>
                   <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                 </form>
               </div>
@@ -1134,7 +1153,6 @@
     }
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    // 移除了錯誤的 root.render(App())，改用標準 React 18 JSX 的渲染模式，防止 Hooks Dispatcher 抓取失敗
     root.render(<App />);
   </script>
 </body>
