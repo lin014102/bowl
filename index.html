@@ -218,6 +218,7 @@
       const [txStockName, setTxStockName] = useState('');
       const [txShares, setTxShares] = useState('');
       const [txPrice, setTxPrice] = useState('');
+      const [txCurrentPrice, setTxCurrentPrice] = useState(''); // 核心新增：登錄時獨立現價狀態
       const [txFee, setTxFee] = useState('0');
       const [txAmount, setTxAmount] = useState('');
       const [txNote, setTxNote] = useState('');
@@ -226,6 +227,20 @@
       const triggerNotification = (message, type = 'success') => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 3500);
+      };
+
+      // 清空登錄表單的輔助函式
+      const resetTxForm = () => {
+        setTxAccountId('');
+        setTxTargetAccountId('');
+        setTxSymbol('');
+        setTxStockName('');
+        setTxShares('');
+        setTxPrice('');
+        setTxCurrentPrice('');
+        setTxFee('0');
+        setTxAmount('');
+        setTxNote('');
       };
 
       // --- 超強智慧容錯解析器 ---
@@ -563,13 +578,17 @@
         }
       };
 
+      // 核心修復：點擊查詢現價時，直接注入 txCurrentPrice 欄位，而保留 txPrice 作為實際買入成本！
       const handleQueryStockPrice = async () => {
         if (!txSymbol.trim()) { triggerNotification('請先輸入標的代號', 'error'); return; }
         setQueryLoading(true);
         const res = await fetchRealStockPrice(txSymbol.trim(), txMarket);
         setQueryLoading(false);
         if (res) {
-          setTxPrice(res.price);
+          setTxCurrentPrice(res.price); // 自動填入即時市場現價
+          if (!txPrice) {
+            setTxPrice(res.price); // 若買入成本尚未手動輸入，則貼心預設等於現價
+          }
           if (res.shortName && !txStockName) setTxStockName(res.shortName);
           triggerNotification(`🔍 獲取即時市價成功: ${res.price}`);
         } else {
@@ -746,7 +765,10 @@
           setAccounts(accounts.map(a => a.id === selAcc.id ? { ...a, balance: a.balance - amt } : a.id === toAcc.id ? { ...a, balance: a.balance + (amt * convRate) } : a));
           setTransactions([{ id: 'tx-' + Date.now(), type: 'TRANSFER', amount: amt, fromAccount: selAcc.id, toAccount: toAcc.id, symbol: null, shares: null, price: parseFloat(txPrice) || null, fee: parseFloat(txFee) || 0, date: todayStr, note: txNote || `轉帳往 ${toAcc.name}` }, ...transactions]);
         } else {
-          const sharesNum = parseFloat(txShares), priceNum = parseFloat(txPrice), feeNum = parseFloat(txFee) || 0;
+          const sharesNum = parseFloat(txShares);
+          const costNum = parseFloat(txPrice); // 買入單價成本
+          const currentPriceNum = parseFloat(txCurrentPrice) || costNum; // 獲取的市場現價（若未填寫則預設等於成本）
+          const feeNum = parseFloat(txFee) || 0;
           const cleanSym = txSymbol.trim().toUpperCase();
 
           if (txType === 'DIVIDEND') {
@@ -760,14 +782,29 @@
             
             if (posIdx > -1) {
               const p = newPos[posIdx];
-              newPos[posIdx] = { ...p, shares: p.shares + sharesNum, avgCost: (((p.shares * p.avgCost) + (sharesNum * priceNum)) / (p.shares + sharesNum)), currentPrice: priceNum };
+              // 重新動態計算加權平均成本，並寫入獨立的現價 (currentPriceNum)，立刻顯示正確損益！
+              newPos[posIdx] = { 
+                ...p, 
+                shares: p.shares + sharesNum, 
+                avgCost: (((p.shares * p.avgCost) + (sharesNum * costNum)) / (p.shares + sharesNum)), 
+                currentPrice: currentPriceNum 
+              };
             } else {
-              newPos.push({ id: 'pos-' + Date.now(), accountId: selAcc.id, market: txMarket, symbol: cleanSym, name: txStockName || cleanSym, shares: sharesNum, avgCost: priceNum, currentPrice: priceNum });
+              newPos.push({ 
+                id: 'pos-' + Date.now(), 
+                accountId: selAcc.id, 
+                market: txMarket, 
+                symbol: cleanSym, 
+                name: txStockName || cleanSym, 
+                shares: sharesNum, 
+                avgCost: costNum, 
+                currentPrice: currentPriceNum 
+              });
             }
             setPositions(newPos);
-            setTransactions([{ id: 'tx-' + Date.now(), type: 'INVENTORY', amount: 0, fromAccount: null, toAccount: selAcc.id, symbol: cleanSym, shares: sharesNum, price: priceNum, fee: 0, date: todayStr, note: txNote || `匯入庫存 ${cleanSym}` }, ...transactions]);
+            setTransactions([{ id: 'tx-' + Date.now(), type: 'INVENTORY', amount: 0, fromAccount: null, toAccount: selAcc.id, symbol: cleanSym, shares: sharesNum, price: costNum, fee: 0, date: todayStr, note: txNote || `匯入庫存 ${cleanSym}` }, ...transactions]);
           } else {
-            const cost = (sharesNum * priceNum) + (txType === 'BUY' ? feeNum : -feeNum);
+            const cost = (sharesNum * costNum) + (txType === 'BUY' ? feeNum : -feeNum);
             if (txType === 'BUY' && selAcc.balance < cost) { triggerNotification(`交易失敗：${selAcc.name} 交割餘額不足！`, 'error'); return; }
             
             const posIdx = positions.findIndex(p => p.accountId === selAcc.id && p.symbol === cleanSym);
@@ -777,23 +814,38 @@
               setAccounts(accounts.map(a => a.id === selAcc.id ? { ...a, balance: a.balance - cost } : a));
               if (posIdx > -1) {
                 const p = newPos[posIdx];
-                newPos[posIdx] = { ...p, shares: p.shares + sharesNum, avgCost: (((p.shares * p.avgCost) + (sharesNum * priceNum)) / (p.shares + sharesNum)), currentPrice: priceNum };
+                newPos[posIdx] = { 
+                  ...p, 
+                  shares: p.shares + sharesNum, 
+                  avgCost: (((p.shares * p.avgCost) + (sharesNum * costNum)) / (p.shares + sharesNum)), 
+                  currentPrice: currentPriceNum 
+                };
               } else {
-                newPos.push({ id: 'pos-' + Date.now(), accountId: selAcc.id, market: txMarket, symbol: cleanSym, name: txStockName || cleanSym, shares: sharesNum, avgCost: priceNum, currentPrice: priceNum });
+                newPos.push({ 
+                  id: 'pos-' + Date.now(), 
+                  accountId: selAcc.id, 
+                  market: txMarket, 
+                  symbol: cleanSym, 
+                  name: txStockName || cleanSym, 
+                  shares: sharesNum, 
+                  avgCost: costNum, 
+                  currentPrice: currentPriceNum 
+                });
               }
             } else { // SELL 股票賣出
               const p = newPos[posIdx];
               if (!p || p.shares < sharesNum) { triggerNotification(`交易失敗：庫存持股數不足！`, 'error'); return; }
               const remain = p.shares - sharesNum;
               if (remain <= 0) newPos.splice(posIdx, 1);
-              else newPos[posIdx] = { ...p, shares: remain, currentPrice: priceNum };
+              else newPos[posIdx] = { ...p, shares: remain, currentPrice: currentPriceNum };
               setAccounts(accounts.map(a => a.id === selAcc.id ? { ...a, balance: a.balance + cost } : a));
             }
             setPositions(newPos);
-            setTransactions([{ id: 'tx-' + Date.now(), type: txType, amount: cost, fromAccount: txType === 'BUY' ? selAcc.id : null, toAccount: txType === 'SELL' ? selAcc.id : null, symbol: cleanSym, shares: sharesNum, price: priceNum, fee: feeNum, date: todayStr, note: txNote || `${txType === 'BUY'?'購入':'售出'} ${cleanSym}` }, ...transactions]);
+            setTransactions([{ id: 'tx-' + Date.now(), type: txType, amount: cost, fromAccount: txType === 'BUY' ? selAcc.id : null, toAccount: txType === 'SELL' ? selAcc.id : null, symbol: cleanSym, shares: sharesNum, price: costNum, fee: feeNum, date: todayStr, note: txNote || `${txType === 'BUY'?'購入':'售出'} ${cleanSym}` }, ...transactions]);
           }
         }
         setShowAddTxModal(false);
+        resetTxForm(); // 完成後呼叫表單清空重置
         triggerNotification('交易登錄成功！🌸', 'success');
       };
 
@@ -867,7 +919,7 @@
               </div>
             )}
 
-            {/* 核心修復：在登入畫面中同步渲染 Notification */}
+            {/* 在登入畫面中同步渲染 Notification */}
             {notification && (
               <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
                 <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
@@ -1060,7 +1112,7 @@
                       <button onClick={handleUpdateStockQuotes} disabled={stockLoading} className="bg-slate-50 hover:bg-slate-100 border border-slate-150 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all">
                         <Icons.Refresh className={`w-3.5 h-3.5 ${stockLoading ? 'animate-spin text-sky-500' : ''}`} /><span>更新即時市價</span>
                       </button>
-                      <button onClick={() => { setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-all">登錄交易/庫存</button>
+                      <button onClick={() => { resetTxForm(); setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-all">登錄交易/庫存</button>
                     </div>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
@@ -1105,7 +1157,7 @@
                 <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">記帳歷史紀錄</h3>
-                    <button onClick={() => { setTxType('TRANSFER'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">轉帳/換匯</button>
+                    <button onClick={() => { resetTxForm(); setTxType('TRANSFER'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">轉帳/換匯</button>
                   </div>
                   <div className="bg-white border border-slate-100 rounded-[24px] overflow-hidden shadow-sm divide-y divide-slate-50">
                     {transactions.map(tx => (
@@ -1204,21 +1256,44 @@
                         <input type="text" placeholder="股票名稱" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
                         <button type="button" onClick={handleQueryStockPrice} className="w-full sm:w-1/3 bg-sky-200 text-sky-900 font-bold rounded-lg text-xs hover:bg-sky-300 py-2">查詢現價</button>
                       </div>
+                      
                       {txType !== 'DIVIDEND' && (
-                        <div className="flex flex-col sm:flex-row gap-2 mt-2">
-                          <input type="number" placeholder="交易股數 (張=1000股)" required value={txShares} onChange={e => setTxShares(e.target.value)} className="w-full sm:flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
-                          <input type="number" placeholder="每股買入單價 (成本)" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="w-full sm:flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
-                          {txType !== 'INVENTORY' && (
-                            <input type="number" placeholder="交易手續費" value={txFee} onChange={e => setTxFee(e.target.value)} className="w-full sm:flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
-                          )}
+                        <div className="space-y-2.5 mt-2">
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <div className="flex-1">
+                              <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">交易股數 (股)</label>
+                              <input type="number" placeholder="例如: 1000" required value={txShares} onChange={e => setTxShares(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                            </div>
+                            <div className="flex-1">
+                              <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">每股買入單價 (實際歷史成本)</label>
+                              <input type="number" placeholder="例如: 920" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                            </div>
+                          </div>
+                          
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <div className="flex-1">
+                              <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">當前每股市價 (現價，預設同成本)</label>
+                              <input type="number" placeholder="點擊上方查詢現價可自動代入" step="any" value={txCurrentPrice} onChange={e => setTxCurrentPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs bg-slate-50/50 focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                            </div>
+                            {txType !== 'INVENTORY' && (
+                              <div className="flex-1">
+                                <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">交易手續費</label>
+                                <input type="number" placeholder="0" value={txFee} onChange={e => setTxFee(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
                   )}
 
+                  {(txType === 'TRANSFER' || txType === 'DIVIDEND') && (
+                    <div className="animate-fade-in"><label className="text-[10px] text-slate-400 block mb-1">配息或轉帳金額</label><input type="number" required value={txAmount} onChange={e => setTxAmount(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" /></div>
+                  )}
+
                   <div><label className="text-[10px] text-slate-400 block mb-1">備註說明 (選填)</label><input type="text" value={txNote} onChange={e => setTxNote(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" /></div>
 
-                  <div className="flex justify-end gap-2 pt-2 border-t"><button type="button" onClick={() => setShowAddTxModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button><button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認並登記</button></div>
+                  <div className="flex justify-end gap-2 pt-2 border-t"><button type="button" onClick={() => { setShowAddTxModal(false); resetTxForm(); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button><button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認並登記</button></div>
                 </form>
               </div>
             </div>
@@ -1230,7 +1305,7 @@
               <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
                 <div className="flex justify-between items-center border-b pb-2">
                   <h3 className="text-sm font-bold text-slate-800">✏️ 編輯持股部位 (成本/數量調整)</h3>
-                  <button type="button" onClick={() => setShowEditPositionModal(false)} className="text-slate-400">✕</button>
+                  <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="text-slate-400">✕</button>
                 </div>
                 <div className="p-3 bg-sky-50 rounded-xl text-[11px] text-sky-800 leading-relaxed mb-1">
                   <strong>標的：{editingPosition.symbol} - {editingPosition.name}</strong><br />
@@ -1250,7 +1325,7 @@
                     <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                   </div>
                   <div className="flex justify-end gap-2 border-t pt-3">
-                    <button type="button" onClick={() => setShowEditPositionModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
+                    <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
                     <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認修改</button>
                   </div>
                 </form>
