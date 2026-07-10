@@ -130,7 +130,7 @@
       Cloud: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" /></svg>
     };
 
-    // --- 核心系統資料庫初始化（安全相容與強制覆蓋） ---
+    // --- 1. 核心系統資料庫初始化（安全相容與強制覆蓋） ---
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'jubaopen-default-app';
     let systemDb = null;
     let systemAuth = null;
@@ -156,22 +156,39 @@
       console.error("System Firebase Init Error:", e);
     }
 
+    // --- 2. 同步初始化使用者自定義 Firebase 實體（關鍵修復：阻斷千分之一秒的時間差競爭） ---
+    const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
+    let isConfigPreset = false;
+    if (savedConfigStr) {
+      try {
+        const config = JSON.parse(savedConfigStr);
+        if (typeof firebase !== 'undefined') {
+          if (firebase.apps.length === 0 || (firebase.apps.length === 1 && firebase.apps[0].name === 'system_backup')) {
+            firebase.initializeApp(config);
+            isConfigPreset = true;
+          } else if (firebase.apps.some(app => app.name === '[DEFAULT]')) {
+            isConfigPreset = true;
+          }
+        }
+      } catch (e) {
+        console.error("Custom Firebase Sync Init Error:", e);
+      }
+    }
+
     function App() {
       // ----------------------------------------
-      // 基礎載入狀態
+      // 基礎載入與同步金鑰狀態（同步初始化，拒絕預設 false 引發的錯誤加載）
       // ----------------------------------------
       const [loginLogoError, setLoginLogoError] = useState(false);
       const [headerLogoError, setHeaderLogoError] = useState(false);
 
-      // ----------------------------------------
-      // 雲端配置狀態
-      // ----------------------------------------
-      const [isFirebaseActive, setIsFirebaseActive] = useState(false);
+      const [isFirebaseActive, setIsFirebaseActive] = useState(isConfigPreset);
       const [firebaseUser, setFirebaseUser] = useState(null);
       const [cloudSyncStatus, setCloudSyncStatus] = useState('local'); // local | syncing | synced | error
-      const [firebaseConfigInput, setFirebaseConfigInput] = useState('');
+      const [firebaseConfigInput, setFirebaseConfigInput] = useState(savedConfigStr || '');
       const [showSettingsModal, setShowSettingsModal] = useState(false);
       const [isDataLoaded, setIsDataLoaded] = useState(false);
+      
       // 核心修復鎖：確保載入(Fetch)未徹底成功前，絕對禁止自動同步(Save)覆蓋舊資產
       const [isUserFetched, setIsUserFetched] = useState(false); 
 
@@ -335,32 +352,19 @@
       };
 
       // ----------------------------------------
-      // 初始化加載與檢測
+      // 初始化加載與數據同步
       // ----------------------------------------
       useEffect(() => {
-        const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
-        if (savedConfigStr) {
-          try {
-            const config = JSON.parse(savedConfigStr);
-            if (typeof firebase !== 'undefined') {
-              if (!firebase.apps.length) {
-                firebase.initializeApp(config);
-              }
-              setIsFirebaseActive(true);
-              setFirebaseConfigInput(savedConfigStr);
-            }
-          } catch (e) {
-            console.error("Firebase 初始化失敗", e);
-          }
-        }
-
         fetchLiveRates();
       }, []);
 
       // 核心修復：在 Firebase 初始化後，嘗試背景自動登入，防範 Canvas 沙盒環境遺失 Session
       useEffect(() => {
-        const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
-        if (savedConfigStr && isFirebaseActive) {
+        if (isFirebaseActive) {
+          if (typeof firebase !== 'undefined' && firebase.auth().currentUser) {
+            setIsDataLoaded(true);
+            return;
+          }
           const cachedUser = safeStorage.getItem('jubaopen_cached_username');
           const cachedPass = safeStorage.getItem('jubaopen_cached_password');
           if (cachedUser && cachedPass) {
@@ -445,8 +449,10 @@
           setIsDataLoaded(true);
           setCloudSyncStatus('synced');
         } catch (e) {
+          console.error("Fetch Cloud Data Error:", e);
           setCloudSyncStatus('error');
           setIsDataLoaded(true);
+          triggerNotification('☁️ 雲端讀取失敗，請確認 Firebase Rules 權限設定或網路連線！', 'error');
         }
       };
 
@@ -629,6 +635,9 @@
         safeStorage.removeItem('jubaopen_cached_password');
         setUsernameInput('');
         setPasswordInput('');
+        setAccounts([]); // 登出清空狀態
+        setPositions([]);
+        setTransactions([]);
         setIsDataLoaded(false);
         triggerNotification('聚寶盆已安全上鎖 🔒', 'success');
       };
