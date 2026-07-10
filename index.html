@@ -121,6 +121,7 @@
     const Icons = {
       TrendingUp: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>,
       Trash: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>,
+      Edit: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>,
       Eye: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>,
       EyeOff: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" /></svg>,
       Logout: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 01-3-3h4a3 3 0 013 3v1" /></svg>,
@@ -173,8 +174,16 @@
       const [editingAccount, setEditingAccount] = useState(null);
       const [showAddTxModal, setShowAddTxModal] = useState(false);
 
+      // 目標金額行內編輯狀態
       const [isEditingGoal, setIsEditingGoal] = useState(false);
       const [tempGoal, setTempGoal] = useState('');
+
+      // 持股直接編輯狀態
+      const [editingPosition, setEditingPosition] = useState(null);
+      const [showEditPositionModal, setShowEditPositionModal] = useState(false);
+      const [editPosShares, setEditPosShares] = useState('');
+      const [editPosAvgCost, setEditPosAvgCost] = useState('');
+      const [editPosCurrentPrice, setEditPosCurrentPrice] = useState('');
 
       const handleStartEditGoal = () => {
         const currentGoalInDisplayCurrency = convertAmount(savingsGoal, 'TWD', displayCurrency);
@@ -222,12 +231,10 @@
       // --- 超強智慧容錯解析器 ---
       // 專門修補漏複製的大括號、引號、欄位標籤等毀損格式，並清洗不尋常空白
       const parseFirebaseConfig = (input) => {
-        // 核心修復：替換非斷行空白字符 (\u00a0)，防止變數名稱解析出錯
         const cleanInput = input.replace(/\u00a0/g, ' ').trim();
         try {
           return JSON.parse(cleanInput);
         } catch (e) {
-          // 正規表達式動態提取常用欄位，支持無引號、單引號、雙引號
           const extract = (key) => {
             const regex = new RegExp(key + '\\s*:\\s*["\'`]?([^"\'`\\r\\n,;]+)["\'`]?');
             const match = cleanInput.match(regex);
@@ -245,21 +252,17 @@
           let messagingSenderId = extract('messagingSenderId');
           let measurementId = extract('measurementId');
 
-          // --- 核心容錯升級：特徵正則匹配 (即使沒有 apiKey: 標籤也能完美救回) ---
           if (!apiKey) {
-            // 搜尋以 AIzaSy 開頭的 Firebase/Google API Key
             const apiKeyMatch = cleanInput.match(/(AIzaSy[A-Za-z0-9_-]+)/);
             if (apiKeyMatch) apiKey = apiKeyMatch[1];
           }
 
           if (!appId) {
-            // 搜尋標準的 web appId 格式 (1:數字:web:雜湊值)
             const appIdMatch = cleanInput.match(/(1:\d+:web:[a-f0-9]+)/);
             if (appIdMatch) appId = appIdMatch[1];
           }
 
           if (!projectId) {
-            // 若無 projectId 但有 authDomain，從 authDomain (xxx.firebaseapp.com) 提取前綴
             if (authDomain) {
               projectId = authDomain.split('.')[0];
             } else {
@@ -272,12 +275,10 @@
           }
 
           if (!messagingSenderId) {
-            // 尋找 11-13 位的發送者 ID 數字
             const senderMatch = cleanInput.match(/\b(\d{11,13})\b/);
             if (senderMatch) messagingSenderId = senderMatch[1];
           }
 
-          // 重新補齊其他常用關聯欄位
           if (projectId) {
             if (!authDomain) authDomain = projectId + ".firebaseapp.com";
             if (!storageBucket) storageBucket = projectId + ".firebasestorage.app";
@@ -390,7 +391,6 @@
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
           }).then(() => setCloudSyncStatus('synced')).catch(() => setCloudSyncStatus('error'));
         } else {
-          // 本機存檔
           const dataToSave = { accounts, positions, transactions, savingsGoal };
           safeStorage.setItem(`jubaopen_user_data_${currentUser.displayName || currentUser.uid}`, JSON.stringify(dataToSave));
           setCloudSyncStatus('local');
@@ -420,7 +420,6 @@
               triggerNotification('登入雲端成功！☁️', 'success');
             }
           } else {
-            // 本機模式
             const localUsers = JSON.parse(safeStorage.getItem('jubaopen_local_users') || '{}');
             if (authMode === 'register') {
               if (localUsers[username]) {
@@ -435,7 +434,6 @@
               if (localUsers[username] === password) {
                 handleLoginUser(username, true);
               } else if (username === 'admin' && password === 'admin') {
-                // 預設快速調試帳號
                 handleLoginUser('admin', true);
               } else {
                 triggerNotification('帳號或密碼輸入錯誤，未註冊請先點選下方「註冊」', 'error');
@@ -444,8 +442,6 @@
           }
         } catch (error) {
           console.error("Auth Error:", error);
-          
-          // 核心修復：解析 Firebase Auth 控制台未設定 Email/Password Provider 的特定錯誤
           let friendlyError = error.message || '發生未知錯誤';
           if (error.code === 'auth/configuration-not-found') {
             friendlyError = '⚠️ 您的 Firebase 控制台尚未啟用「電子郵件/密碼」登入！請至 Firebase 網頁 > Authentication > Sign-in method 點選啟用此服務，即可完成同步登入！';
@@ -459,7 +455,7 @@
             friendlyError = '⚠️ 帳號或密碼輸入錯誤，請確認。';
           }
           
-          triggerNotification('登入/註冊失敗：' + friendlyError, 'error');
+          triggerNotification(friendlyError, 'error');
           setCloudSyncStatus('error');
         }
       };
@@ -498,7 +494,6 @@
         e.preventDefault();
         const val = firebaseConfigInput.trim();
         
-        // 若清空輸入，則清除金鑰並無縫切回本機模式
         if (!val) {
           safeStorage.removeItem('jubaopen_firebase_config');
           setIsFirebaseActive(false);
@@ -511,7 +506,6 @@
           const config = parseFirebaseConfig(val);
           safeStorage.setItem('jubaopen_firebase_config', JSON.stringify(config));
           
-          // 熱載入 Firebase 實例，如果已經初始化過則重新建立
           if (typeof firebase !== 'undefined') {
             if (firebase.apps.length > 0) {
               try {
@@ -672,7 +666,7 @@
         if (isNaN(balanceNum)) return;
         if (editingAccount) {
           setAccounts(accounts.map(a => a.id === editingAccount.id ? { ...a, name: newAccName, type: newAccType, currency: newAccCurrency, balance: balanceNum } : a));
-          setTransactions([{ id: 'tx-' + Date.now(), type: 'DEPOSIT', amount: balanceNum - editingAccount.balance, fromAccount: null, toAccount: editingAccount.id, symbol: null, shares: null, price: null, fee: 0, date: new Date().toISOString().split('T')[0], note: `更新「${newAccName}」餘額` }, ...transactions]);
+          setTransactions([{ id: 'tx-' + Date.now(), type: 'DEPOSIT', amount: balanceNum - editingAccount.balance, fromAccount: null, toAccount: editingAccount.id, symbol: null, shares: null, price: null, fee: 0, date: new Date().toISOString().split('T')[0], note: `修改「${newAccName}」帳戶資訊` }, ...transactions]);
         } else {
           const newAccount = { id: 'acc-' + Date.now(), name: newAccName, type: newAccType, currency: newAccCurrency, balance: balanceNum };
           setAccounts([...accounts, newAccount]);
@@ -682,10 +676,52 @@
         triggerNotification('帳戶資料更新成功 🌸', 'success');
       };
 
+      const handleEditAccount = (acc) => {
+        setEditingAccount(acc);
+        setNewAccName(acc.name);
+        setNewAccType(acc.type);
+        setNewAccCurrency(acc.currency);
+        setNewAccBalance(acc.balance);
+        setShowAddAccountModal(true);
+      };
+
       const handleDeleteAccount = (id, name) => {
         if (positions.some(p => p.accountId === id)) { triggerNotification(`無法刪除：該帳戶仍存在股票投資部位`, 'error'); return; }
         setAccounts(accounts.filter(a => a.id !== id));
         triggerNotification(`已手動移除「${name}」儲蓄戶`, 'success');
+      };
+
+      // 股票部位手動編輯提交
+      const handleEditPositionSubmit = (e) => {
+        e.preventDefault();
+        if (!editingPosition) return;
+        const sharesNum = parseFloat(editPosShares);
+        const costNum = parseFloat(editPosAvgCost);
+        const priceNum = parseFloat(editPosCurrentPrice);
+
+        if (isNaN(sharesNum) || isNaN(costNum) || isNaN(priceNum) || sharesNum < 0 || costNum < 0 || priceNum < 0) {
+          triggerNotification('請輸入有效的正數值！', 'error');
+          return;
+        }
+
+        setPositions(positions.map(p => p.id === editingPosition.id ? {
+          ...p,
+          shares: sharesNum,
+          avgCost: costNum,
+          currentPrice: priceNum
+        } : p));
+
+        setShowEditPositionModal(false);
+        setEditingPosition(null);
+        triggerNotification(`已手動更新 ${editingPosition.symbol} 持股成本與現價！📈`, 'success');
+      };
+
+      const handleStartEditPosition = (pos) => {
+        setEditingPosition(pos);
+        setEditPosShares(pos.shares);
+        setEditPosAvgCost(pos.avgCost);
+        setEditPosCurrentPrice(pos.currentPrice);
+        setShowEditPositionModal(true);
       };
 
       const handleDeletePosition = (posId, symbol) => {
@@ -831,7 +867,7 @@
               </div>
             )}
 
-            {/* 在登入畫面中同步渲染 Notification，使得錯誤提醒能被看見 */}
+            {/* 核心修復：在登入畫面中同步渲染 Notification */}
             {notification && (
               <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
                 <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
@@ -859,7 +895,6 @@
             </div>
 
             <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
-              {/* 雲端 / 本機狀態按鈕 */}
               <button type="button" onClick={() => setShowSettingsModal(true)} className="flex items-center shrink-0">
                 {cloudSyncStatus === 'synced' && <span className="text-[10px] sm:text-xs bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>☁️</span><span className="hidden sm:inline">雲端已同步</span></span>}
                 {cloudSyncStatus === 'syncing' && <span className="text-[10px] sm:text-xs bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1 animate-pulse"><span>☁️</span><span className="hidden sm:inline">同步中</span></span>}
@@ -906,7 +941,6 @@
               <div className="bg-white border border-slate-100 rounded-[24px] p-5 shadow-sm space-y-4">
                 <div className="flex justify-between items-center text-xs font-semibold">
                   <span className="text-slate-700">目標進度 {((netWorthTWD / savingsGoal) * 100).toFixed(1)}%</span>
-                  {}
                   {isEditingGoal ? (
                     <form onSubmit={handleSaveGoal} className="flex items-center gap-1">
                       <span className="text-[10px] text-slate-400 font-bold">{displayCurrency}</span>
@@ -914,7 +948,7 @@
                         type="number"
                         value={tempGoal}
                         onChange={e => setTempGoal(e.target.value)}
-                        className="w-20 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs font-bold text-slate-700 focus:outline-none"
+                        className="w-24 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs font-bold text-slate-700 focus:outline-none"
                         step="any"
                         autoFocus
                       />
@@ -988,18 +1022,26 @@
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶</h3>
-                    <button onClick={() => setShowAddAccountModal(true)} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
+                    <button onClick={() => { setEditingAccount(null); setNewAccName(''); setNewAccBalance(''); setShowAddAccountModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {accounts.map(acc => (
                       <div key={acc.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm relative group overflow-hidden transition-shadow hover:shadow-md">
                         <div className="absolute top-0 left-0 w-1 h-full bg-sky-200"></div>
-                        <div className="flex justify-between items-center">
+                        <div className="flex justify-between items-start">
                           <div>
                             <h4 className="text-sm font-bold text-slate-800">{acc.name}</h4>
                             <span className="text-[10px] text-slate-400 font-medium">{acc.type === 'BANK' ? '銀行存款' : acc.type === 'INVESTMENT' ? '交割帳戶' : '現金袋'} • {acc.currency}</span>
                           </div>
-                          <button onClick={() => handleDeleteAccount(acc.id, acc.name)} className="text-slate-300 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition"><Icons.Trash className="w-4 h-4" /></button>
+                          {/* 核心優化：帳戶編輯功能整合 */}
+                          <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                            <button onClick={() => handleEditAccount(acc)} className="text-slate-400 hover:text-sky-500 p-1 rounded hover:bg-slate-50" title="編輯帳戶">
+                              <Icons.Edit className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handleDeleteAccount(acc.id, acc.name)} className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-slate-50" title="刪除帳戶">
+                              <Icons.Trash className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                         <p className="text-lg font-bold text-slate-800 mt-3">{formatMoney(acc.balance, acc.currency)}</p>
                       </div>
@@ -1038,7 +1080,17 @@
                               <td className="py-3 px-4 text-right font-bold text-slate-800">{formatMoney(pos.currentPrice, pos.market === 'US' ? 'USD' : 'TWD')}</td>
                               <td className="py-3 px-4 text-right font-extrabold">{formatMoney(convertAmount(pos.valueTWD, 'TWD', displayCurrency))}</td>
                               <td className="py-3 px-4 text-right"><span className={`font-bold block ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{pos.profitTWD >= 0 ? '+' : ''}{formatMoney(convertAmount(pos.profitTWD, 'TWD', displayCurrency))}</span><span className={`text-[10px] font-semibold ${pos.profitTWD >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{pos.profitPercent.toFixed(1)}%</span></td>
-                              <td className="py-3 px-4 text-center"><button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-300 hover:text-rose-400 transition-colors"><Icons.Trash className="w-4 h-4" /></button></td>
+                              {/* 核心優化：持股資料快速編輯 */}
+                              <td className="py-3 px-4 text-center">
+                                <div className="flex items-center justify-center space-x-1.5">
+                                  <button onClick={() => handleStartEditPosition(pos)} className="text-slate-400 hover:text-sky-500 p-1 rounded hover:bg-slate-100 transition-colors" title="編輯持股與成本">
+                                    <Icons.Edit className="w-4 h-4" />
+                                  </button>
+                                  <button onClick={() => handleDeletePosition(pos.id, pos.symbol)} className="text-slate-300 hover:text-rose-400 p-1 rounded hover:bg-slate-100 transition-colors" title="移除持股">
+                                    <Icons.Trash className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
                             </tr>
                           ))}
                           {positions.length === 0 && <tr><td colSpan="7" className="py-8 text-center text-slate-400 font-medium">您的盆內目前尚無持股部位。</td></tr>}
@@ -1078,7 +1130,7 @@
             </section>
           </main>
 
-          {/* 彈窗：新增帳戶 */}
+          {/* 彈窗：建立或修改帳戶 */}
           {showAddAccountModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
@@ -1111,10 +1163,18 @@
                       ))}
                     </div>
                   </div>
+                  
+                  {/* 庫存建倉模式提示說明 */}
+                  {txType === 'INVENTORY' && (
+                    <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-800 leading-relaxed">
+                      💡 <strong>提示：</strong>「匯入庫存」是直接在您的股票明細中建立初始部位與平均買入成本，<strong>不會扣除任何存款帳戶的資金</strong>。適合用來初始化您現有的持股組合！
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">
-                        {txType === 'INVENTORY' ? '庫存歸屬帳戶 (不會扣款)' : '帳戶'}
+                        {txType === 'INVENTORY' ? '庫存歸屬帳戶 (不會扣款)' : '扣款/收款帳戶'}
                       </label>
                       <select required value={txAccountId} onChange={e => setTxAccountId(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs">
                         <option value="">-- 選擇帳戶 --</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}
@@ -1146,10 +1206,10 @@
                       </div>
                       {txType !== 'DIVIDEND' && (
                         <div className="flex gap-2 mt-2">
-                          <input type="number" placeholder="股數" required value={txShares} onChange={e => setTxShares(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
-                          <input type="number" placeholder="單價成本" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
+                          <input type="number" placeholder="交易股數 (張=1000股)" required value={txShares} onChange={e => setTxShares(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
+                          <input type="number" placeholder="每股買入單價 (成本)" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
                           {txType !== 'INVENTORY' && (
-                            <input type="number" placeholder="手續費" value={txFee} onChange={e => setTxFee(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
+                            <input type="number" placeholder="交易手續費" value={txFee} onChange={e => setTxFee(e.target.value)} className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs" />
                           )}
                         </div>
                       )}
@@ -1157,12 +1217,46 @@
                   )}
 
                   {(txType === 'TRANSFER' || txType === 'DIVIDEND') && (
-                    <div className="animate-fade-in"><label className="text-[10px] text-slate-400 block mb-1">金額</label><input type="number" required value={txAmount} onChange={e => setTxAmount(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" /></div>
+                    <div className="animate-fade-in"><label className="text-[10px] text-slate-400 block mb-1">配息或轉帳金額</label><input type="number" required value={txAmount} onChange={e => setTxAmount(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" /></div>
                   )}
 
                   <div><label className="text-[10px] text-slate-400 block mb-1">備註說明 (選填)</label><input type="text" value={txNote} onChange={e => setTxNote(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-xs focus:outline-none" /></div>
 
                   <div className="flex justify-end gap-2 pt-2 border-t"><button type="button" onClick={() => setShowAddTxModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button><button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認並登記</button></div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* 彈窗：持股資料快速手動編輯 (損益修正與成本直接調整) */}
+          {showEditPositionModal && editingPosition && (
+            <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <h3 className="text-sm font-bold text-slate-800">✏️ 編輯持股部位 (成本/數量調整)</h3>
+                  <button type="button" onClick={() => setShowEditPositionModal(false)} className="text-slate-400">✕</button>
+                </div>
+                <div className="p-3 bg-sky-50 rounded-xl text-[11px] text-sky-800 leading-relaxed mb-1">
+                  <strong>標的：{editingPosition.symbol} - {editingPosition.name}</strong><br />
+                  直接調整持股總量與每股平均買入成本。未實現損益會依據此平均成本與即時價格重新計算。
+                </div>
+                <form onSubmit={handleEditPositionSubmit} className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">目前總持股數 (股)</label>
+                    <input type="number" required value={editPosShares} onChange={e => setEditPosShares(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">每股平均買入成本 ({editingPosition.market === 'US' ? 'USD' : 'TWD'})</label>
+                    <input type="number" step="any" required value={editPosAvgCost} onChange={e => setEditPosAvgCost(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">目前市場現價 ({editingPosition.market === 'US' ? 'USD' : 'TWD'})</label>
+                    <input type="number" step="any" required value={editPosCurrentPrice} onChange={e => setEditPosCurrentPrice(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                  </div>
+                  <div className="flex justify-end gap-2 border-t pt-3">
+                    <button type="button" onClick={() => setShowEditPositionModal(false)} className="px-4 py-2 bg-slate-100 text-xs font-bold rounded-xl text-slate-500">取消</button>
+                    <button type="submit" className="px-5 py-2 bg-sky-200 text-xs font-bold rounded-xl text-sky-900">確認修改</button>
+                  </div>
                 </form>
               </div>
             </div>
