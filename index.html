@@ -163,6 +163,7 @@
       const [firebaseConfigInput, setFirebaseConfigInput] = useState('');
       const [showSettingsModal, setShowSettingsModal] = useState(false);
       const [showBackupModal, setShowBackupModal] = useState(false);
+      const [showRulesGuideModal, setShowRulesGuideModal] = useState(false); // 安全規則教學視窗狀態
       const [isDataLoaded, setIsDataLoaded] = useState(false);
       const [isUserFetched, setIsUserFetched] = useState(false); // 安全防覆蓋寫入鎖
 
@@ -431,6 +432,9 @@
           }
         } catch (e) {
           console.error("雲端載入失敗", e);
+          if (e.message && (e.message.includes("permission") || e.code === "permission-denied")) {
+            setShowRulesGuideModal(true);
+          }
           setCloudSyncStatus('error');
         } finally {
           setIsDataLoaded(true);
@@ -564,7 +568,11 @@
           }
         } catch (error) {
           console.error("驗證與拉取錯誤", error);
-          triggerNotification('連線出錯：' + error.message, 'error');
+          if (error.message && (error.message.includes("permission") || error.code === "permission-denied")) {
+            setShowRulesGuideModal(true);
+          } else {
+            triggerNotification('連線出錯：' + error.message, 'error');
+          }
         } finally {
           setIsDataLoaded(true);
         }
@@ -644,7 +652,10 @@
               setCloudSyncStatus('synced');
             } catch (err) {
               console.error("自動雲端備份失敗：", err);
-              setCloudSyncStatus('error');
+              if (err.message && (err.message.includes("permission") || err.code === "permission-denied")) {
+                setCloudSyncStatus('error');
+                setShowRulesGuideModal(true);
+              }
             }
           } else {
             const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
@@ -1059,6 +1070,59 @@
               </div>
             )}
 
+            {/* 彈窗：權限不足安全設定指南 */}
+            {showRulesGuideModal && (
+              <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-fade-in border border-rose-100">
+                  <div className="flex justify-between items-center border-b pb-3 border-slate-100">
+                    <h3 className="text-sm font-extrabold text-rose-600 flex items-center gap-1.5">
+                      <span>⚠️</span><span>您的雲端需要設定安全規則</span>
+                    </h3>
+                    <button type="button" onClick={() => setShowRulesGuideModal(false)} className="text-slate-400 font-bold hover:text-slate-600">✕</button>
+                  </div>
+
+                  <div className="space-y-4 text-xs leading-relaxed text-slate-600">
+                    <p className="font-bold text-slate-800">由於您使用的是自訂資料庫，請依照以下 3 個步驟開啟權限：</p>
+                    <ol className="list-decimal pl-5 space-y-2 text-slate-600">
+                      <li>進入 <a href="https://console.firebase.google.com/" target="_blank" className="text-sky-500 underline font-semibold">Firebase 控制台</a>，點擊您的專案。</li>
+                      <li>在左側選單點擊 <strong>Firestore Database</strong>，再切換到 <strong>Rules（規則）</strong> 頁籤。</li>
+                      <li>將裡面的程式碼修改為以下內容並點擊<strong>「發佈」(Publish)</strong>：</li>
+                    </ol>
+
+                    <pre className="p-3 bg-slate-50 rounded-xl font-mono text-[9px] text-slate-700 overflow-x-auto border">
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/{appId}/public/data/userProfiles/{cleanUser} {
+      allow read, write: if true;
+    }
+  }
+}`}
+                    </pre>
+
+                    <div className="flex gap-2.5 pt-2">
+                      <button 
+                        onClick={() => {
+                          setShowRulesGuideModal(false);
+                          handleLocalFallback();
+                          triggerNotification("已成功降級並切換為安全本地對帳模式！📱");
+                        }} 
+                        className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all text-xs"
+                      >
+                        切換到純本地模式 (免網路)
+                      </button>
+                      <button 
+                        onClick={() => setShowRulesGuideModal(false)} 
+                        className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-semibold transition-all text-xs"
+                      >
+                        我已發佈，重新測試
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {notification && (
               <div className="fixed bottom-4 right-4 z-50 animate-fade-in">
                 <div className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-medium flex items-center gap-2 ${notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' : notification.type === 'info' ? 'bg-sky-50 border-sky-100 text-sky-700' : 'bg-emerald-50 border-emerald-150 text-emerald-700'}`}>
@@ -1088,7 +1152,7 @@
             </div>
 
             <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
-              {/* 本地資料保險箱按鈕 (極其顯眼，提供終極安全感) */}
+              {/* 本地資料保險箱按鈕 */}
               <button onClick={() => setShowBackupModal(true)} className="flex items-center gap-1 bg-amber-100 hover:bg-amber-200 border border-amber-200 text-amber-900 px-2 sm:px-3 py-1 rounded-full font-bold text-[10px] sm:text-xs transition-colors shrink-0">
                 <span>💾</span><span className="hidden sm:inline">資料保險箱</span>
               </button>
@@ -1318,7 +1382,7 @@
             </section>
           </main>
 
-          {/* 彈窗：資料保險箱備份管理 (新增) */}
+          {/* 彈窗：資料保險箱備份管理 */}
           {showBackupModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
               <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl">
@@ -1365,6 +1429,54 @@
                 <p className="text-[10px] text-slate-400 font-semibold text-center pt-2">
                   提示：即使瀏覽器自動被登出或資料被洗掉，只要開啟此網頁，點選匯入上方的 .json 檔，一秒即可還原您先前所有的帳目！
                 </p>
+              </div>
+            </div>
+          )}
+
+          {/* 彈窗：權限不足安全設定指南 (登入後) */}
+          {showRulesGuideModal && (
+            <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-fade-in border border-rose-100">
+                <div className="flex justify-between items-center border-b pb-3 border-slate-100">
+                  <h3 className="text-sm font-extrabold text-rose-600 flex items-center gap-1.5">
+                    <span>⚠️</span><span>資料庫安全規則需要調整</span>
+                  </h3>
+                  <button type="button" onClick={() => setShowRulesGuideModal(false)} className="text-slate-400 font-bold hover:text-slate-600">✕</button>
+                </div>
+
+                <div className="space-y-4 text-xs leading-relaxed text-slate-600">
+                  <p className="font-bold text-slate-800">您的 Firebase 目前拒絕了本網頁的寫入。請前往 Firebase 控制台貼上以下規則：</p>
+                  
+                  <pre className="p-3 bg-slate-50 rounded-xl font-mono text-[9px] text-slate-700 overflow-x-auto border">
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/{appId}/public/data/userProfiles/{cleanUser} {
+      allow read, write: if true;
+    }
+  }
+}`}
+                  </pre>
+
+                  <div className="flex gap-2.5 pt-2">
+                    <button 
+                      onClick={() => {
+                        setShowRulesGuideModal(false);
+                        handleLocalFallback();
+                        triggerNotification("已切換為純本機模式 📱");
+                      }} 
+                      className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all text-xs"
+                    >
+                      暫時改用純本地模式
+                    </button>
+                    <button 
+                      onClick={() => setShowRulesGuideModal(false)} 
+                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-semibold transition-all text-xs"
+                    >
+                      已修正，重新連線
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
