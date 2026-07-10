@@ -173,6 +173,29 @@
       const [editingAccount, setEditingAccount] = useState(null);
       const [showAddTxModal, setShowAddTxModal] = useState(false);
 
+      const [isEditingGoal, setIsEditingGoal] = useState(false);
+      const [tempGoal, setTempGoal] = useState('');
+
+      const handleStartEditGoal = () => {
+        const currentGoalInDisplayCurrency = convertAmount(savingsGoal, 'TWD', displayCurrency);
+        const roundedGoal = displayCurrency === 'TWD' ? Math.round(currentGoalInDisplayCurrency) : parseFloat(currentGoalInDisplayCurrency.toFixed(2));
+        setTempGoal(roundedGoal);
+        setIsEditingGoal(true);
+      };
+
+      const handleSaveGoal = (e) => {
+        e.preventDefault();
+        const goalNum = parseFloat(tempGoal);
+        if (isNaN(goalNum) || goalNum <= 0) {
+          triggerNotification('請輸入正確的目標金額！', 'error');
+          return;
+        }
+        const goalInTWD = convertAmount(goalNum, displayCurrency, 'TWD');
+        setSavingsGoal(Math.round(goalInTWD));
+        setIsEditingGoal(false);
+        triggerNotification('目標金額更新成功 🌸', 'success');
+      };
+
       // 表單狀態
       const [newAccName, setNewAccName] = useState('');
       const [newAccType, setNewAccType] = useState('BANK');
@@ -883,7 +906,29 @@
               <div className="bg-white border border-slate-100 rounded-[24px] p-5 shadow-sm space-y-4">
                 <div className="flex justify-between items-center text-xs font-semibold">
                   <span className="text-slate-700">目標進度 {((netWorthTWD / savingsGoal) * 100).toFixed(1)}%</span>
-                  <span className="text-slate-400">目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}</span>
+                  {}
+                  {isEditingGoal ? (
+                    <form onSubmit={handleSaveGoal} className="flex items-center gap-1">
+                      <span className="text-[10px] text-slate-400 font-bold">{displayCurrency}</span>
+                      <input
+                        type="number"
+                        value={tempGoal}
+                        onChange={e => setTempGoal(e.target.value)}
+                        className="w-20 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs font-bold text-slate-700 focus:outline-none"
+                        step="any"
+                        autoFocus
+                      />
+                      <button type="submit" className="text-emerald-500 hover:text-emerald-600 font-bold px-1 text-xs">✓</button>
+                      <button type="button" onClick={() => setIsEditingGoal(false)} className="text-slate-400 hover:text-slate-500 font-bold px-1 text-xs">✕</button>
+                    </form>
+                  ) : (
+                    <span onClick={handleStartEditGoal} className="text-slate-400 hover:text-sky-500 cursor-pointer flex items-center gap-1 select-none" title="點擊修改目標金額">
+                      目標 {formatMoney(convertAmount(savingsGoal, 'TWD', displayCurrency))}
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 inline text-slate-300 hover:text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                    </span>
+                  )}
                 </div>
                 <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
                   <div className="h-full bg-sky-300 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, (netWorthTWD / savingsGoal) * 100)}%` }} />
