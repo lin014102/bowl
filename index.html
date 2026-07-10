@@ -185,6 +185,7 @@
       const [showAddAccountModal, setShowAddAccountModal] = useState(false);
       const [editingAccount, setEditingAccount] = useState(null);
       const [showAddTxModal, setShowAddTxModal] = useState(false);
+      const [txToDelete, setTxToDelete] = useState(null); // 新增：待刪除與沖帳之交易
 
       // 目標與持股編輯狀態
       const [isEditingGoal, setIsEditingGoal] = useState(false);
@@ -715,6 +716,141 @@
       }, [assetAllocation]);
 
       // ----------------------------------------
+      // 9.5 記帳交易歷史刪除並自動沖帳 (Rollback)
+      // ----------------------------------------
+      const confirmDeleteTransaction = () => {
+        if (!txToDelete) return;
+        const tx = txToDelete;
+        
+        let updatedAccounts = [...accounts];
+        let updatedPositions = [...positions];
+
+        try {
+          if (tx.type === 'DEPOSIT') {
+            // 存入回滾：扣回存款
+            updatedAccounts = updatedAccounts.map(a => {
+              if (a.id === tx.toAccount) {
+                return { ...a, balance: Math.max(0, a.balance - tx.amount) };
+              }
+              return a;
+            });
+          } 
+          else if (tx.type === 'TRANSFER') {
+            // 轉帳回滾：把錢退回來源帳戶，並扣除目標帳戶
+            const fromAcc = accounts.find(a => a.id === tx.fromAccount);
+            const toAcc = accounts.find(a => a.id === tx.toAccount);
+            if (fromAcc && toAcc) {
+              const convRate = tx.price || convertAmount(1, fromAcc.currency, toAcc.currency);
+              updatedAccounts = updatedAccounts.map(a => {
+                if (a.id === tx.fromAccount) {
+                  return { ...a, balance: a.balance + tx.amount };
+                }
+                if (a.id === tx.toAccount) {
+                  return { ...a, balance: Math.max(0, a.balance - (tx.amount * convRate)) };
+                }
+                return a;
+              });
+            }
+          } 
+          else if (tx.type === 'DIVIDEND') {
+            // 配息回滾：扣除配息
+            updatedAccounts = updatedAccounts.map(a => {
+              if (a.id === tx.toAccount) {
+                return { ...a, balance: Math.max(0, a.balance - tx.amount) };
+              }
+              return a;
+            });
+          } 
+          else if (tx.type === 'BUY') {
+            // 買入回滾：退回交易款項，並減去買入持股
+            updatedAccounts = updatedAccounts.map(a => {
+              if (a.id === tx.fromAccount) {
+                return { ...a, balance: a.balance + tx.amount };
+              }
+              return a;
+            });
+
+            const posIdx = updatedPositions.findIndex(p => p.accountId === tx.fromAccount && p.symbol === tx.symbol);
+            if (posIdx > -1) {
+              const p = updatedPositions[posIdx];
+              const remainShares = p.shares - tx.shares;
+              if (remainShares <= 0) {
+                updatedPositions.splice(posIdx, 1);
+              } else {
+                // 回滾加權平均成本
+                const prevTotalCost = (p.shares * p.avgCost) - (tx.shares * tx.price);
+                const prevAvgCost = prevTotalCost / remainShares;
+                updatedPositions[posIdx] = {
+                  ...p,
+                  shares: remainShares,
+                  avgCost: Math.max(0, prevAvgCost)
+                };
+              }
+            }
+          } 
+          else if (tx.type === 'SELL') {
+            // 賣出回滾：扣回賣出款項，補回賣出股數
+            updatedAccounts = updatedAccounts.map(a => {
+              if (a.id === tx.toAccount) {
+                return { ...a, balance: Math.max(0, a.balance - tx.amount) };
+              }
+              return a;
+            });
+
+            const posIdx = updatedPositions.findIndex(p => p.accountId === tx.toAccount && p.symbol === tx.symbol);
+            if (posIdx > -1) {
+              const p = updatedPositions[posIdx];
+              updatedPositions[posIdx] = {
+                ...p,
+                shares: p.shares + tx.shares
+              };
+            } else {
+              // 若先前已全部賣光，補回原始持股狀態
+              updatedPositions.push({
+                id: 'pos-' + Date.now(),
+                accountId: tx.toAccount,
+                market: tx.price > 1000 ? 'TW' : 'US',
+                symbol: tx.symbol,
+                name: tx.symbol,
+                shares: tx.shares,
+                avgCost: tx.price,
+                currentPrice: tx.price
+              });
+            }
+          } 
+          else if (tx.type === 'INVENTORY') {
+            // 庫存回滾：不影響款項，純粹減去持股
+            const posIdx = updatedPositions.findIndex(p => p.accountId === tx.toAccount && p.symbol === tx.symbol);
+            if (posIdx > -1) {
+              const p = updatedPositions[posIdx];
+              const remainShares = p.shares - tx.shares;
+              if (remainShares <= 0) {
+                updatedPositions.splice(posIdx, 1);
+              } else {
+                const prevTotalCost = (p.shares * p.avgCost) - (tx.shares * tx.price);
+                const prevAvgCost = prevTotalCost / remainShares;
+                updatedPositions[posIdx] = {
+                  ...p,
+                  shares: remainShares,
+                  avgCost: Math.max(0, prevAvgCost)
+                };
+              }
+            }
+          }
+
+          setAccounts(updatedAccounts);
+          setPositions(updatedPositions);
+          setTransactions(transactions.filter(t => t.id !== tx.id));
+          triggerNotification("已成功刪除該筆交易紀錄並完成自動沖帳！🌸", "success");
+        } catch (err) {
+          console.error("沖帳回滾發生錯誤", err);
+          triggerNotification("自動沖帳失敗，請確認手動調整餘額！", "error");
+        } finally {
+          setTxToDelete(null);
+        }
+      };
+
+      // ----------------------------------------
       // 10. 財務帳務及操作
       // ----------------------------------------
       const handleStartEditGoal = () => {
@@ -1125,6 +1261,13 @@
 
               {activeTab === 'accounts' && (
                 <div className="space-y-4">
+                  {}
+                  {/* 新增：外幣資產建立說明指南 */}
+                  <div className="bg-sky-50/50 border border-sky-100 rounded-2xl p-4 text-xs text-sky-800 leading-relaxed shadow-sm">
+                    💡 <strong>如何新增美元、日幣等外幣資產？</strong><br />
+                    點擊右下方「建立新帳戶」按鈕，並在選單中將<strong>「幣別」</strong>切換為 <strong>USD、JPY 或 EUR</strong>。系統會自動獲取最新即時匯率，將您的外幣存款依匯率折算計入總預估淨資產中！
+                  </div>
+
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶</h3>
                     <button onClick={() => { setEditingAccount(null); setNewAccName(''); setNewAccBalance(''); setShowAddAccountModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
@@ -1156,6 +1299,13 @@
 
               {activeTab === 'positions' && (
                 <div className="space-y-4">
+                  {}
+                  {/* 新增：美股持股建立說明指南 */}
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-4 text-xs text-indigo-900 leading-relaxed shadow-sm">
+                    💡 <strong>如何新增美股投資部位？</strong><br />
+                    點擊右上方「登錄交易/庫存」按鈕，將證券查詢切換為<strong>「美股」</strong>。輸入美股代號（如 AAPL、TSLA）並點擊「查詢現價」，即可快速登錄美股部位。買入款項會自動由您指定的美元交割/儲蓄帳戶扣除！
+                  </div>
+
                   <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-slate-800">台美持股明細</h3>
@@ -1212,18 +1362,23 @@
                   </div>
                   <div className="bg-white border border-slate-100 rounded-[24px] overflow-hidden shadow-sm divide-y divide-slate-50">
                     {transactions.map(tx => (
-                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/20 transition-all">
+                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/20 transition-all group">
                         <div>
                           <p className="font-bold text-slate-800">{tx.note}</p>
                           <span className="text-[9px] text-slate-400">{tx.date}</span>
                         </div>
-                        <span className="font-extrabold text-slate-800">
-                          {tx.type === 'INVENTORY' ? (
-                            <span className="text-slate-400 font-medium bg-slate-100 px-2 py-0.5 rounded text-[10px]">庫存建倉 (無扣款)</span>
-                          ) : (
-                            `${tx.type === 'BUY' ? '-' : '+'}${formatMoney(tx.amount)}`
-                          )}
-                        </span>
+                        <div className="flex items-center space-x-3">
+                          <span className="font-extrabold text-slate-800">
+                            {tx.type === 'INVENTORY' ? (
+                              <span className="text-slate-400 font-medium bg-slate-100 px-2 py-0.5 rounded text-[10px]">庫存建倉 (無扣款)</span>
+                            ) : (
+                              `${(tx.type === 'BUY' || (tx.type === 'TRANSFER' && tx.fromAccount)) ? '-' : '+'}${formatMoney(tx.amount)}`
+                            )}
+                          </span>
+                          <button onClick={() => setTxToDelete(tx)} className="text-slate-300 hover:text-rose-500 p-1 rounded hover:bg-slate-100 transition-colors opacity-0 group-hover:opacity-100" title="刪除交易並沖帳">
+                            <Icons.Trash className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                     {transactions.length === 0 && <div className="py-8 text-center text-slate-400 font-medium">目前尚無收支流向。</div>}
@@ -1401,6 +1556,31 @@
                   <p className="text-[10px] text-stone-400 font-bold">※ 提示：若想恢復為極速本機離線模式，請將上方輸入框清空後點擊更新即可。※</p>
                   <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {}
+          {/* 新增：刪除與自動沖帳確認彈窗 */}
+          {txToDelete && (
+            <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-xl">
+                <div className="text-center space-y-2">
+                  <span className="text-3xl">⚠️</span>
+                  <h3 className="text-sm font-bold text-slate-800">確定刪除此交易並「沖帳」？</h3>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    刪除此紀錄後，系統將<strong>自動進行餘額/股數反向沖帳計算</strong>（如：刪除買股會退回款項並減去持股；刪除存入會扣除存款）。
+                  </p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3 text-[11px] space-y-1 text-slate-600 border border-slate-100">
+                  <p><strong>交易備註：</strong>{txToDelete.note}</p>
+                  <p><strong>交易類型：</strong>{txToDelete.type === 'BUY' ? '買入證券' : txToDelete.type === 'SELL' ? '賣出證券' : txToDelete.type === 'TRANSFER' ? '轉帳/換匯' : txToDelete.type === 'DIVIDEND' ? '配息所得' : txToDelete.type === 'INVENTORY' ? '庫存建倉' : '資金存入'}</p>
+                  <p><strong>交易日期：</strong>{txToDelete.date}</p>
+                </div>
+                <div className="flex gap-2.5">
+                  <button type="button" onClick={() => setTxToDelete(null)} className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-xs font-bold rounded-xl text-slate-500 transition-colors">取消</button>
+                  <button type="button" onClick={confirmDeleteTransaction} className="flex-1 py-2 bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold rounded-xl shadow-md transition-colors">確定刪除並沖帳</button>
+                </div>
               </div>
             </div>
           )}
