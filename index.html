@@ -156,18 +156,18 @@
 
       const envAppId = typeof __app_id !== 'undefined' ? __app_id : 'jubaopen-default-app';
 
-      // 雲端同步核心狀態
+      // 雲端同步狀態 (預設關閉，手動啟用制)
       const [isFirebaseActive, setIsFirebaseActive] = useState(false);
       const [firebaseUser, setFirebaseUser] = useState(null);
       const [cloudSyncStatus, setCloudSyncStatus] = useState('local'); // local | syncing | synced | error
       const [firebaseConfigInput, setFirebaseConfigInput] = useState('');
       const [showSettingsModal, setShowSettingsModal] = useState(false);
       const [showBackupModal, setShowBackupModal] = useState(false);
-      const [showRulesGuideModal, setShowRulesGuideModal] = useState(false); // 安全規則教學視窗狀態
+      const [showRulesGuideModal, setShowRulesGuideModal] = useState(false); // 權限教學
       const [isDataLoaded, setIsDataLoaded] = useState(false);
-      const [isUserFetched, setIsUserFetched] = useState(false); // 安全防覆蓋寫入鎖
+      const [isUserFetched, setIsUserFetched] = useState(false); // 讀寫安全鎖
 
-      // 登入與財政數據
+      // 登入狀態與財務數據
       const [currentUser, setCurrentUser] = useState(null);
       const [authMode, setAuthMode] = useState('login');
       const [usernameInput, setUsernameInput] = useState('');
@@ -197,6 +197,9 @@
       const [editPosShares, setEditPosShares] = useState('');
       const [editPosAvgCost, setEditPosAvgCost] = useState('');
       const [editPosCurrentPrice, setEditPosCurrentPrice] = useState('');
+
+      // 沖帳確認狀態
+      const [txToDelete, setTxToDelete] = useState(null);
 
       const [newAccName, setNewAccName] = useState('');
       const [newAccType, setNewAccType] = useState('BANK');
@@ -313,7 +316,6 @@
               throw new Error("此檔案不是合法的聚寶盆備份格式！");
             }
 
-            // 安全防覆蓋寫入鎖，強制防堵自動儲存競態
             setIsUserFetched(false);
 
             setAccounts(parsedData.accounts || []);
@@ -325,39 +327,36 @@
             setShowBackupModal(false);
             triggerNotification("🎉 恭喜！備份數據已順利100%載入還原！", "success");
             
-            // 重置檔案選取器
             if (fileInputRef.current) fileInputRef.current.value = "";
           } catch (err) {
-            triggerNotification("還原失敗：檔案可能損毀或格式不符。" + err.message, "error");
+            triggerNotification("還原失敗：檔案格式不符。" + err.message, "error");
           }
         };
         fileReader.readAsText(file);
       };
 
       // ----------------------------------------
-      // 核心初始化：防沙盒 Iframe 重置
+      // 核心初始化
       // ----------------------------------------
       useEffect(() => {
         const initSystem = async () => {
           setIsDataLoaded(false);
           let activeConfig = null;
+          let usingCustomConfig = false;
 
-          // 1. 優先自訂雲端金鑰
           const savedConfigStr = safeStorage.getItem('jubaopen_firebase_config');
           if (savedConfigStr) {
             try {
               activeConfig = JSON.parse(savedConfigStr);
               setFirebaseConfigInput(savedConfigStr);
+              usingCustomConfig = true;
             } catch (e) {}
           }
 
-          // 2. 備用原生雲端
           if (!activeConfig && typeof __firebase_config !== 'undefined' && __firebase_config) {
             try {
               activeConfig = JSON.parse(__firebase_config);
-            } catch (e) {
-              console.error("解析內配 Firebase 失敗", e);
-            }
+            } catch (e) {}
           }
 
           if (activeConfig && typeof firebase !== 'undefined') {
@@ -369,25 +368,27 @@
               setIsFirebaseActive(true);
               setCloudSyncStatus('syncing');
 
-              // 雲端靜默登入
               let userCredential;
-              if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                userCredential = await firebase.auth().signInWithCustomToken(__initial_auth_token);
+              if (!usingCustomConfig && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                try {
+                  userCredential = await firebase.auth().signInWithCustomToken(__initial_auth_token);
+                } catch(e) {
+                  userCredential = await firebase.auth().signInAnonymously();
+                }
               } else {
                 userCredential = await firebase.auth().signInAnonymously();
               }
               setFirebaseUser(userCredential.user);
 
-              // 3. Iframe 生存：檢查 remembered user
               const remembered = safeStorage.getItem('jubaopen_remembered_user');
               if (remembered) {
-                await handleAutoLoginCloud(remembered);
+                await handleAutoLoginCloud(remembered, userCredential.user);
               } else {
                 setIsDataLoaded(true);
               }
 
             } catch (err) {
-              console.error("Firebase 連線失敗或限制，回退至安全本地保險箱模式", err);
+              console.error("Firebase 連線失敗或限制，切換為本地安全模式", err);
               handleLocalFallback();
             }
           } else {
@@ -411,12 +412,16 @@
         }
       };
 
-      const handleAutoLoginCloud = async (username) => {
+      const handleAutoLoginCloud = async (username, currentUserObj = firebaseUser) => {
+        if (!currentUserObj) {
+          setIsDataLoaded(true);
+          return;
+        }
         setCloudSyncStatus('syncing');
         try {
           const db = firebase.firestore();
           const cleanUser = username.trim().toLowerCase();
-          const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
+          const docRef = db.doc(`artifacts/${envAppId}/users/${currentUserObj.uid}/jubaopenData/${cleanUser}`);
           const doc = await docRef.get();
           if (doc.exists) {
             const data = doc.data();
@@ -433,9 +438,11 @@
         } catch (e) {
           console.error("雲端載入失敗", e);
           if (e.message && (e.message.includes("permission") || e.code === "permission-denied")) {
-            setShowRulesGuideModal(true);
+            setIsFirebaseActive(false); // 關閉出錯的雲端連線
+            setShowRulesGuideModal(true); // 顯示錯誤指南彈窗
           }
           setCloudSyncStatus('error');
+          handleLoginLocalOffline(username); // 無縫降級載入本地資料
         } finally {
           setIsDataLoaded(true);
         }
@@ -472,9 +479,9 @@
 
         setIsDataLoaded(false);
         try {
-          if (isFirebaseActive && typeof firebase !== 'undefined') {
+          if (isFirebaseActive && typeof firebase !== 'undefined' && firebaseUser) {
             const db = firebase.firestore();
-            const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
+            const docRef = db.doc(`artifacts/${envAppId}/users/${firebaseUser.uid}/jubaopenData/${cleanUser}`);
             const doc = await docRef.get();
 
             if (authMode === 'register') {
@@ -569,7 +576,11 @@
         } catch (error) {
           console.error("驗證與拉取錯誤", error);
           if (error.message && (error.message.includes("permission") || error.code === "permission-denied")) {
-            setShowRulesGuideModal(true);
+            setIsFirebaseActive(false); // 停止錯誤連線
+            setCloudSyncStatus('local');
+            handleLoginLocalOffline(usernameInput); // 自動降級到本機模式，保證能進畫面
+            setShowRulesGuideModal(true); // 顯示引導視窗
+            triggerNotification('權限被拒絕，已自動為您切換至安全的本機模式！', 'error');
           } else {
             triggerNotification('連線出錯：' + error.message, 'error');
           }
@@ -612,7 +623,8 @@
             firebase.initializeApp(config);
             setIsFirebaseActive(true);
             setCloudSyncStatus('syncing');
-            await firebase.auth().signInAnonymously();
+            const cred = await firebase.auth().signInAnonymously();
+            setFirebaseUser(cred.user);
           }
           setShowSettingsModal(false);
           triggerNotification('自訂金鑰綁定成功，立即進行同步！☁️', 'success');
@@ -625,7 +637,7 @@
       };
 
       // ----------------------------------------
-      // 自動背景同步 (具備競態防護鎖)
+      // 自動背景同步
       // ----------------------------------------
       useEffect(() => {
         if (!isDataLoaded || !currentUser || !isUserFetched) return;
@@ -635,11 +647,11 @@
           isWritingRef.current = true;
           const cleanUser = currentUser.displayName.toLowerCase();
 
-          if (isFirebaseActive && typeof firebase !== 'undefined' && firebase.auth().currentUser) {
+          if (isFirebaseActive && typeof firebase !== 'undefined' && firebaseUser) {
             setCloudSyncStatus('syncing');
             try {
               const db = firebase.firestore();
-              const docRef = db.doc(`artifacts/${appId}/public/data/userProfiles/${cleanUser}`);
+              const docRef = db.doc(`artifacts/${envAppId}/users/${firebaseUser.uid}/jubaopenData/${cleanUser}`);
               
               await docRef.set({
                 accounts: accounts,
@@ -652,10 +664,14 @@
               setCloudSyncStatus('synced');
             } catch (err) {
               console.error("自動雲端備份失敗：", err);
+              setCloudSyncStatus('error');
               if (err.message && (err.message.includes("permission") || err.code === "permission-denied")) {
-                setCloudSyncStatus('error');
+                setIsFirebaseActive(false); // 停止無效連線
                 setShowRulesGuideModal(true);
               }
+              // 本地同步防丟失
+              const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
+              safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(userPayload));
             }
           } else {
             const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
@@ -667,7 +683,7 @@
 
         const delayDebounce = setTimeout(syncData, 500);
         return () => clearTimeout(delayDebounce);
-      }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser, isUserFetched, isFirebaseActive]);
+      }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser, isUserFetched, isFirebaseActive, firebaseUser, envAppId]);
 
       // ----------------------------------------
       // 匯率與行情同步
@@ -707,7 +723,7 @@
       };
 
       const handleQueryStockPrice = async () => {
-        if (!txSymbol.trim()) { triggerNotification('請先輸入標的代號', 'error'); return; }
+        if (!txSymbol.trim()) { triggerNotification('請先輸入標對代號', 'error'); return; }
         setQueryLoading(true);
         const res = await fetchRealStockPrice(txSymbol.trim(), txMarket);
         setQueryLoading(false);
@@ -802,6 +818,125 @@
           return res;
         });
       }, [assetAllocation]);
+
+      // ----------------------------------------
+      // 交易紀錄沖帳回滾（Rollback）智慧邏輯
+      // ----------------------------------------
+      const handleDeleteTransaction = (txId) => {
+        const tx = transactions.find(t => t.id === txId);
+        if (!tx) return;
+
+        let updatedAccounts = [...accounts];
+        let updatedPositions = [...positions];
+
+        // 沖帳：進行交易的反向操作
+        if (tx.type === 'DEPOSIT') {
+          // 沖帳存入：減少目標帳戶資金
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.toAccount) {
+              return { ...a, balance: a.balance - tx.amount };
+            }
+            return a;
+          });
+        } else if (tx.type === 'TRANSFER') {
+          // 沖帳轉帳：把錢從目標帳戶還原回來源帳戶
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.fromAccount) {
+              return { ...a, balance: a.balance + tx.amount };
+            }
+            if (a.id === tx.toAccount) {
+              const convRate = tx.price || 1;
+              return { ...a, balance: a.balance - (tx.amount * convRate) };
+            }
+            return a;
+          });
+        } else if (tx.type === 'DIVIDEND') {
+          // 沖帳股息：扣回股息存款
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.toAccount) {
+              return { ...a, balance: a.balance - tx.amount };
+            }
+            return a;
+          });
+        } else if (tx.type === 'INVENTORY') {
+          // 沖帳庫存：扣除持股，不影響資金
+          const posIdx = updatedPositions.findIndex(p => p.accountId === tx.toAccount && p.symbol === tx.symbol);
+          if (posIdx > -1) {
+            const p = updatedPositions[posIdx];
+            const remainShares = p.shares - tx.shares;
+            if (remainShares <= 0) {
+              updatedPositions.splice(posIdx, 1);
+            } else {
+              const totalCost = (p.shares * p.avgCost) - (tx.shares * tx.price);
+              const newAvgCost = totalCost / remainShares;
+              updatedPositions[posIdx] = {
+                ...p,
+                shares: remainShares,
+                avgCost: newAvgCost > 0 ? newAvgCost : p.avgCost
+              };
+            }
+          }
+        } else if (tx.type === 'BUY') {
+          // 沖帳買入：退回交割款 (買入扣款包含手續費) 到來源交割戶，並減去股數
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.fromAccount) {
+              return { ...a, balance: a.balance + tx.amount };
+            }
+            return a;
+          });
+
+          const posIdx = updatedPositions.findIndex(p => p.accountId === tx.fromAccount && p.symbol === tx.symbol);
+          if (posIdx > -1) {
+            const p = updatedPositions[posIdx];
+            const remainShares = p.shares - tx.shares;
+            if (remainShares <= 0) {
+              updatedPositions.splice(posIdx, 1);
+            } else {
+              const totalCost = (p.shares * p.avgCost) - (tx.shares * tx.price);
+              const newAvgCost = remainShares > 0 ? (totalCost / remainShares) : 0;
+              updatedPositions[posIdx] = {
+                ...p,
+                shares: remainShares,
+                avgCost: newAvgCost > 0 ? newAvgCost : p.avgCost
+              };
+            }
+          }
+        } else if (tx.type === 'SELL') {
+          // 沖帳賣出：從收款交割戶中扣回售得資金，並加回持股
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.toAccount) {
+              return { ...a, balance: a.balance - tx.amount };
+            }
+            return a;
+          });
+
+          const posIdx = updatedPositions.findIndex(p => p.accountId === tx.toAccount && p.symbol === tx.symbol);
+          if (posIdx > -1) {
+            const p = updatedPositions[posIdx];
+            updatedPositions[posIdx] = {
+              ...p,
+              shares: p.shares + tx.shares
+            };
+          } else {
+            // 已清空的部位重新建回
+            updatedPositions.push({
+              id: 'pos-' + Date.now(),
+              accountId: tx.toAccount,
+              market: tx.symbol.match(/[a-zA-Z]/) ? 'US' : 'TW',
+              symbol: tx.symbol,
+              name: tx.symbol,
+              shares: tx.shares,
+              avgCost: tx.price,
+              currentPrice: tx.price
+            });
+          }
+        }
+
+        setAccounts(updatedAccounts);
+        setPositions(updatedPositions);
+        setTransactions(transactions.filter(t => t.id !== txId));
+        triggerNotification("🗑️ 交易紀錄已成功移除，且帳戶餘額與持股已自動反向沖帳！", "success");
+      };
 
       // ----------------------------------------
       // 帳戶與交易變動登錄
@@ -1006,37 +1141,37 @@
                 </div>
                 <h1 className="text-2xl font-bold text-stone-800 tracking-tight">聚寶盆</h1>
                 <p className="text-xs text-stone-400 font-semibold tracking-wider">
-                  {isFirebaseActive ? "雲端永久同步儲存中" : "離線本地安全模式"}
+                  {isFirebaseActive ? "雲端同步模式" : "極速本地安全模式"}
                 </p>
               </div>
 
               {!isDataLoaded ? (
                 <div className="py-12 flex flex-col items-center justify-center space-y-4 animate-fade-in">
                   <div className="w-8 h-8 border-4 border-sky-200 border-t-sky-500 rounded-full animate-spin"></div>
-                  <p className="text-xs text-stone-400 font-bold animate-pulse">正在開啟您的聚寶盆，安全連線中...</p>
+                  <p className="text-xs text-stone-400 font-bold animate-pulse">正在開啟您的聚寶盆，請稍候...</p>
                 </div>
               ) : (
                 <form onSubmit={handleAuthSubmit} className="space-y-4 animate-fade-in">
                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[10.5px] text-amber-800 leading-relaxed">
-                    ⚙️ <strong>無網/離線使用技巧：</strong>如果您想避開繁雜的雲端設定、或瀏覽器總是自動清除資料，可在下方註冊一組純本機帳密登入，並隨時使用內建的「手動 JSON 備份檔」功能，100% 杜絕丟失！
+                    ⚙️ <strong>免除網路與設定技巧：</strong>為提供 100% 不丟失體驗，您可以直接在下方註冊一組「本地專屬帳密」，即可直接啟用！並使用頂部內建的 💾「資料保險箱」手動備份 JSON 檔。
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] text-stone-400 font-bold uppercase block">自訂聚寶帳戶名稱</label>
-                    <input type="text" required placeholder="例如: admin 或您個人的姓名" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
+                    <label className="text-[10px] text-stone-400 font-bold uppercase block">帳戶登入名稱</label>
+                    <input type="text" required placeholder="例如: admin 或您個人的英文名" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] text-stone-400 font-bold uppercase block">安全密碼</label>
                     <input type="password" required placeholder="請輸入密碼" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className="w-full bg-[#faf9f6] border border-stone-200/60 rounded-2xl px-4 py-2.5 text-xs text-stone-700 focus:outline-none focus:ring-1 focus:ring-[#9a8c7d]" />
                   </div>
-                  <button type="submit" className={`w-full py-3 text-white font-semibold text-xs rounded-2xl transition-all shadow-md ${isFirebaseActive ? 'bg-sky-500 hover:bg-sky-600 shadow-sky-500/20' : 'bg-[#9a8c7d] hover:bg-[#8d7f70] shadow-[#9a8c7d]/20'}`}>
-                    {authMode === 'login' ? '開啟聚寶盆 🍯' : '快速註冊並解鎖雲端 ☁️'}
+                  <button type="submit" className="w-full py-3 text-white font-semibold text-xs rounded-2xl transition-all shadow-md bg-[#9a8c7d] hover:bg-[#8d7f70] shadow-[#9a8c7d]/20">
+                    {authMode === 'login' ? '開啟聚寶盆 🍯' : '快速建立帳戶 🎉'}
                   </button>
                   <div className="flex justify-between items-center text-xs px-1 pt-2">
-                    <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className={`${isFirebaseActive ? 'text-sky-600' : 'text-[#9a8c7d]'} font-bold hover:underline`}>
+                    <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-[#9a8c7d] font-bold hover:underline">
                       {authMode === 'login' ? '新用戶？點此快速註冊' : '已有帳號？返回登入'}
                     </button>
                     <button type="button" onClick={() => setShowSettingsModal(true)} className="text-stone-400 hover:text-stone-700 font-bold flex items-center gap-1">
-                      ⚙️ 自訂專屬資料庫
+                      ⚙️ 雲端備份設定
                     </button>
                   </div>
                 </form>
@@ -1063,59 +1198,65 @@
                       onChange={e => setFirebaseConfigInput(e.target.value)} 
                       className="w-full h-36 bg-stone-50 border rounded-xl p-3 text-[10px] font-mono text-stone-700 focus:outline-none" 
                     />
-                    <p className="text-[10px] text-stone-400 font-bold">※ 提示：不需修改程式碼，直接貼上 Firebase 配置即可。清空並儲存則回歸本地快照模式。※</p>
+                    <p className="text-[10px] text-stone-400 font-bold">※ 提示：不需修改程式碼，直接貼上您的 Firebase Config 字串。清空並儲存則回歸本地對帳模式。※</p>
                     <button type="submit" className="w-full py-2 bg-sky-500 text-white text-xs font-bold rounded-xl shadow-md">更新設定</button>
                   </form>
                 </div>
               </div>
             )}
 
-            {/* 彈窗：權限不足安全設定指南 */}
+            {/* 彈窗：權限不足自動降級與教學 */}
             {showRulesGuideModal && (
               <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                 <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-fade-in border border-rose-100">
                   <div className="flex justify-between items-center border-b pb-3 border-slate-100">
                     <h3 className="text-sm font-extrabold text-rose-600 flex items-center gap-1.5">
-                      <span>⚠️</span><span>您的雲端需要設定安全規則</span>
+                      <span>⚠️</span><span>雲端資料庫權限遭拒</span>
                     </h3>
                     <button type="button" onClick={() => setShowRulesGuideModal(false)} className="text-slate-400 font-bold hover:text-slate-600">✕</button>
                   </div>
 
                   <div className="space-y-4 text-xs leading-relaxed text-slate-600">
-                    <p className="font-bold text-slate-800">由於您使用的是自訂資料庫，請依照以下 3 個步驟開啟權限：</p>
-                    <ol className="list-decimal pl-5 space-y-2 text-slate-600">
-                      <li>進入 <a href="https://console.firebase.google.com/" target="_blank" className="text-sky-500 underline font-semibold">Firebase 控制台</a>，點擊您的專案。</li>
-                      <li>在左側選單點擊 <strong>Firestore Database</strong>，再切換到 <strong>Rules（規則）</strong> 頁籤。</li>
-                      <li>將裡面的程式碼修改為以下內容並點擊<strong>「發佈」(Publish)</strong>：</li>
-                    </ol>
+                    <p className="font-bold text-slate-800">由於您自訂的 Firebase 尚未開放讀寫權限，系統已自動為您切換至<strong className="text-amber-600">「本機離線模式」</strong>，確保您可以正常登入與記帳。</p>
+                    
+                    <div className="p-3 bg-sky-50 rounded-xl border border-sky-100 space-y-2">
+                      <p className="font-bold text-sky-800">💡 推薦最簡解決方案：</p>
+                      <p className="text-sky-700">您其實<strong>完全不需要設定自己的 Firebase</strong>！系統內建永久免費雲端空間。直接點擊下方按鈕，即可改用系統雲端，免去所有繁瑣設定。</p>
+                      <button 
+                        onClick={() => {
+                          safeStorage.removeItem('jubaopen_firebase_config');
+                          window.location.reload();
+                        }} 
+                        className="w-full py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-bold transition-all shadow-md"
+                      >
+                        清除自訂金鑰，改用系統內建雲端
+                      </button>
+                    </div>
 
-                    <pre className="p-3 bg-slate-50 rounded-xl font-mono text-[9px] text-slate-700 overflow-x-auto border">
+                    <div className="space-y-2">
+                      <p className="font-bold text-slate-500">🔧 或手動修正您的 Firebase 規則：</p>
+                      <ol className="list-decimal pl-5 text-slate-500 space-y-1">
+                        <li>進入 Firebase 控制台 &gt; Firestore Database &gt; Rules (規則)。</li>
+                        <li>將內容改為以下「全開測試模式」並發佈：</li>
+                      </ol>
+                      <pre className="p-2 bg-slate-50 rounded-lg font-mono text-[9px] text-slate-700 overflow-x-auto border border-slate-200">
 {`rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /artifacts/{appId}/public/data/userProfiles/{cleanUser} {
+    match /{document=**} {
       allow read, write: if true;
     }
   }
 }`}
-                    </pre>
+                      </pre>
+                    </div>
 
                     <div className="flex gap-2.5 pt-2">
                       <button 
-                        onClick={() => {
-                          setShowRulesGuideModal(false);
-                          handleLocalFallback();
-                          triggerNotification("已成功降級並切換為安全本地對帳模式！📱");
-                        }} 
-                        className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all text-xs"
-                      >
-                        切換到純本地模式 (免網路)
-                      </button>
-                      <button 
                         onClick={() => setShowRulesGuideModal(false)} 
-                        className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-semibold transition-all text-xs"
+                        className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-bold transition-all text-xs"
                       >
-                        我已發佈，重新測試
+                        我已瞭解，繼續使用本機模式
                       </button>
                     </div>
                   </div>
@@ -1147,7 +1288,7 @@ service cloud.firestore {
               </div>
               <div className="min-w-0">
                 <h1 className="text-sm sm:text-md font-bold text-slate-800 tracking-tight truncate">聚寶盆</h1>
-                <p className="text-[9px] sm:text-[10px] text-sky-400 font-medium truncate">個人智慧雲端財富管家</p>
+                <p className="text-[9px] sm:text-[10px] text-sky-400 font-medium truncate">個人智慧智慧財富管家</p>
               </div>
             </div>
 
@@ -1158,10 +1299,10 @@ service cloud.firestore {
               </button>
 
               <button type="button" onClick={() => setShowSettingsModal(true)} className="flex items-center shrink-0">
-                {cloudSyncStatus === 'synced' && <span className="text-[10px] sm:text-xs bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>☁️</span><span className="hidden sm:inline">雲端同步已開啟</span></span>}
+                {cloudSyncStatus === 'synced' && <span className="text-[10px] sm:text-xs bg-emerald-50 text-emerald-600 border border-emerald-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>☁️</span><span className="hidden sm:inline">雲端同步中</span></span>}
                 {cloudSyncStatus === 'syncing' && <span className="text-[10px] sm:text-xs bg-sky-50 text-sky-600 border border-sky-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1 animate-pulse"><span>☁️</span><span className="hidden sm:inline">同步中</span></span>}
-                {cloudSyncStatus === 'local' && <span className="text-[10px] sm:text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>📱</span><span className="hidden sm:inline">本機極速模式</span></span>}
-                {cloudSyncStatus === 'error' && <span className="text-[10px] sm:text-xs bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>⚠️</span><span className="hidden sm:inline">網路異常</span></span>}
+                {cloudSyncStatus === 'local' && <span className="text-[10px] sm:text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>📱</span><span className="hidden sm:inline">本地保險箱模式</span></span>}
+                {cloudSyncStatus === 'error' && <span className="text-[10px] sm:text-xs bg-rose-50 text-rose-600 border border-rose-100 px-2.5 py-1 rounded-full font-extrabold flex items-center gap-1"><span>⚠️</span><span className="hidden sm:inline">離線模式</span></span>}
               </button>
 
               <button onClick={() => setHideValues(!hideValues)} className="p-1 text-slate-400 hover:text-sky-500 transition-colors shrink-0">
@@ -1260,7 +1401,7 @@ service cloud.firestore {
               </div>
 
               {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-fade-in">
                   <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
                     <span className="text-xs text-slate-400 font-bold block">可用存款總計</span>
                     <p className="text-xl font-bold text-slate-800 mt-1">{formatMoney(convertAmount(totalCashTWD, 'TWD', displayCurrency))}</p>
@@ -1273,11 +1414,17 @@ service cloud.firestore {
               )}
 
               {activeTab === 'accounts' && (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-bold text-slate-800">儲蓄帳戶</h3>
                     <button onClick={() => { setEditingAccount(null); setNewAccName(''); setNewAccBalance(''); setShowAddAccountModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors">建立新帳戶</button>
                   </div>
+                  
+                  {/* 外幣引導提示卡 */}
+                  <div className="p-3.5 bg-blue-50/50 border border-blue-100 rounded-2xl text-[11px] text-blue-900/80 leading-relaxed">
+                    💡 <strong>外幣/美元資產新增技巧：</strong>點選「建立新帳戶」後，將幣別選為 <strong>USD、JPY 或 EUR</strong>，系統即會透過每日實時網路匯率，在首頁全自動折算並加總在您的總淨資產內！
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {accounts.map(acc => (
                       <div key={acc.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm relative group overflow-hidden transition-shadow hover:shadow-md">
@@ -1304,7 +1451,7 @@ service cloud.firestore {
               )}
 
               {activeTab === 'positions' && (
-                <div className="space-y-4">
+                <div className="space-y-4 animate-fade-in">
                   <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-slate-800">台美持股明細</h3>
@@ -1316,6 +1463,12 @@ service cloud.firestore {
                       <button onClick={() => { resetTxForm(); setTxType('BUY'); setShowAddTxModal(true); }} className="bg-sky-200 hover:bg-sky-300 text-sky-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-all">登錄交易/庫存</button>
                     </div>
                   </div>
+
+                  {/* 美股引導提示卡 */}
+                  <div className="p-3.5 bg-sky-50/50 border border-sky-100 rounded-2xl text-[11px] text-sky-900/80 leading-relaxed">
+                    💡 <strong>美股資產新增技巧：</strong>點選「登錄交易/庫存」將市場選為 <strong>美股</strong>（此時代號可輸入如 <code>AAPL</code>、<code>TSLA</code> 等，點選「查詢現價」便可依美元價格登錄，扣款也會自您的美金交割戶中扣除）。
+                  </div>
+
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
                     <div className="overflow-x-auto">
                       <table className="w-full text-xs text-left min-w-[600px]">
@@ -1361,18 +1514,30 @@ service cloud.firestore {
                   </div>
                   <div className="bg-white border border-slate-100 rounded-[24px] overflow-hidden shadow-sm divide-y divide-slate-50">
                     {transactions.map(tx => (
-                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/20 transition-all">
-                        <div>
-                          <p className="font-bold text-slate-800">{tx.note}</p>
-                          <span className="text-[9px] text-slate-400">{tx.date}</span>
+                      <div key={tx.id} className="p-4 flex justify-between items-center text-xs hover:bg-slate-50/20 transition-all group">
+                        <div className="flex-1 min-w-0 pr-2">
+                          <p className="font-bold text-slate-800 truncate">{tx.note}</p>
+                          <span className="text-[9px] text-slate-400">
+                            {tx.date} • {tx.type === 'BUY' ? '股票買入' : tx.type === 'SELL' ? '股票賣出' : tx.type === 'INVENTORY' ? '匯入庫存' : tx.type === 'TRANSFER' ? '帳戶轉帳' : tx.type === 'DIVIDEND' ? '股票配息' : '開戶存入'}
+                          </span>
                         </div>
-                        <span className="font-extrabold text-slate-800">
-                          {tx.type === 'INVENTORY' ? (
-                            <span className="text-slate-400 font-medium bg-slate-100 px-2 py-0.5 rounded text-[10px]">庫存建倉 (無扣款)</span>
-                          ) : (
-                            `${tx.type === 'BUY' ? '-' : '+'}${formatMoney(tx.amount)}`
-                          )}
-                        </span>
+                        <div className="flex items-center space-x-3 shrink-0">
+                          <span className="font-extrabold text-slate-800">
+                            {tx.type === 'INVENTORY' ? (
+                              <span className="text-slate-400 font-medium bg-slate-100 px-2 py-0.5 rounded text-[10px]">庫存建倉 (無扣款)</span>
+                            ) : (
+                              `${tx.type === 'BUY' || tx.type === 'TRANSFER' ? '-' : '+'}${formatMoney(tx.amount)}`
+                            )}
+                          </span>
+                          {/* 刪除交易紀錄與反向沖帳 */}
+                          <button 
+                            onClick={() => setTxToDelete(tx)}
+                            className="text-slate-300 hover:text-rose-500 p-1 rounded hover:bg-slate-100 transition-colors opacity-0 group-hover:opacity-100"
+                            title="刪除此紀錄並自動反向沖帳"
+                          >
+                            <Icons.Trash className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                     {transactions.length === 0 && <div className="py-8 text-center text-slate-400 font-medium">目前尚無收支流向。</div>}
@@ -1433,49 +1598,92 @@ service cloud.firestore {
             </div>
           )}
 
-          {/* 彈窗：權限不足安全設定指南 (登入後) */}
+          {/* 彈窗：權限不足自動降級與教學 (登入後) */}
           {showRulesGuideModal && (
             <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-fade-in border border-rose-100">
                 <div className="flex justify-between items-center border-b pb-3 border-slate-100">
                   <h3 className="text-sm font-extrabold text-rose-600 flex items-center gap-1.5">
-                    <span>⚠️</span><span>資料庫安全規則需要調整</span>
+                    <span>⚠️</span><span>雲端資料庫權限遭拒</span>
                   </h3>
                   <button type="button" onClick={() => setShowRulesGuideModal(false)} className="text-slate-400 font-bold hover:text-slate-600">✕</button>
                 </div>
 
                 <div className="space-y-4 text-xs leading-relaxed text-slate-600">
-                  <p className="font-bold text-slate-800">您的 Firebase 目前拒絕了本網頁的寫入。請前往 Firebase 控制台貼上以下規則：</p>
+                  <p className="font-bold text-slate-800">由於您自訂的 Firebase 尚未開放讀寫權限，系統已自動為您切換至<strong className="text-amber-600">「本機離線模式」</strong>，確保您可以正常使用與記帳。</p>
                   
-                  <pre className="p-3 bg-slate-50 rounded-xl font-mono text-[9px] text-slate-700 overflow-x-auto border">
+                  <div className="p-3 bg-sky-50 rounded-xl border border-sky-100 space-y-2">
+                    <p className="font-bold text-sky-800">💡 推薦最簡解決方案：</p>
+                    <p className="text-sky-700">您其實<strong>完全不需要設定自己的 Firebase</strong>！系統內建永久免費雲端空間。直接點擊下方按鈕，即可改用系統雲端，免去所有繁瑣設定。</p>
+                    <button 
+                      onClick={() => {
+                        safeStorage.removeItem('jubaopen_firebase_config');
+                        window.location.reload();
+                      }} 
+                      className="w-full py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-bold transition-all shadow-md"
+                    >
+                      清除自訂金鑰，改用系統內建雲端
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="font-bold text-slate-500">🔧 或手動修正您的 Firebase 規則：</p>
+                    <ol className="list-decimal pl-5 text-slate-500 space-y-1">
+                      <li>進入 Firebase 控制台 &gt; Firestore Database &gt; Rules (規則)。</li>
+                      <li>將內容改為以下「全開測試模式」並發佈：</li>
+                    </ol>
+                    <pre className="p-2 bg-slate-50 rounded-lg font-mono text-[9px] text-slate-700 overflow-x-auto border border-slate-200">
 {`rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /artifacts/{appId}/public/data/userProfiles/{cleanUser} {
+    match /{document=**} {
       allow read, write: if true;
     }
   }
 }`}
-                  </pre>
+                    </pre>
+                  </div>
 
                   <div className="flex gap-2.5 pt-2">
                     <button 
-                      onClick={() => {
-                        setShowRulesGuideModal(false);
-                        handleLocalFallback();
-                        triggerNotification("已切換為純本機模式 📱");
-                      }} 
-                      className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all text-xs"
-                    >
-                      暫時改用純本地模式
-                    </button>
-                    <button 
                       onClick={() => setShowRulesGuideModal(false)} 
-                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-semibold transition-all text-xs"
+                      className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl font-bold transition-all text-xs"
                     >
-                      已修正，重新連線
+                      我已瞭解，繼續使用本機模式
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 彈窗：交易沖帳確認彈窗 */}
+          {txToDelete && (
+            <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-xl border border-slate-100 animate-fade-in">
+                <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
+                  <span>⚠️</span><span>交易紀錄與自動沖帳確認</span>
+                </h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  您確定要刪除「<strong className="text-slate-800">{txToDelete.note}</strong>」嗎？<br />
+                  這會自動還原該交易影響的<strong>帳戶餘額或股票持股股數</strong>！
+                </p>
+                <div className="flex gap-2.5 pt-2">
+                  <button 
+                    onClick={() => setTxToDelete(null)} 
+                    className="flex-1 py-2 bg-slate-100 text-slate-500 rounded-xl font-bold text-xs hover:bg-slate-200 transition-all"
+                  >
+                    取消
+                  </button>
+                  <button 
+                    onClick={() => {
+                      handleDeleteTransaction(txToDelete.id);
+                      setTxToDelete(null);
+                    }} 
+                    className="flex-1 py-2 bg-rose-500 text-white rounded-xl font-bold text-xs hover:bg-rose-600 transition-all"
+                  >
+                    確認刪除並沖帳
+                  </button>
                 </div>
               </div>
             </div>
