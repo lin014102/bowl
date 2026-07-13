@@ -714,7 +714,7 @@
           const data = await res.json();
           const meta = data.chart?.result?.[0]?.meta;
           if (meta && meta.regularMarketPrice) {
-            return { price: parseFloat(meta.regularMarketPrice.toFixed(2)), shortName: meta.shortName || symbol.toUpperCase() };
+            return { price: parseFloat(meta.regularMarketPrice.toFixed(2)), shortName: meta.shortName || '' };
           }
           return null;
         } catch (err) {
@@ -746,7 +746,8 @@
         try {
           const updated = await Promise.all(positions.map(async (pos) => {
             const res = await fetchRealStockPrice(pos.symbol, pos.market);
-            return res ? { ...pos, currentPrice: res.price, name: res.shortName || pos.name } : pos;
+            // 修正：絕對不覆蓋使用者自訂的股票名稱 (pos.name)，只單純更新現價 (res.price)
+            return res ? { ...pos, currentPrice: res.price } : pos;
           }));
           setPositions(updated);
           triggerNotification('🔄 已成功同步最新即時市價！', 'success');
