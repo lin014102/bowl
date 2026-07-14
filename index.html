@@ -30,6 +30,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
   <style>
+    /* iOS 滿版優化，防止拉動回彈破壞版面 */
     body {
       background-color: #fcfdfe;
       -webkit-tap-highlight-color: transparent;
@@ -57,6 +58,7 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // --- 安全存儲包裝器 (safeStorage) ---
+    // 解決沙盒環境 (Canvas) 阻擋 localStorage 導致的無聲崩潰問題
     const memoryStorage = {};
     const safeStorage = {
       getItem(key) {
@@ -156,7 +158,7 @@
 
       const envAppId = typeof __app_id !== 'undefined' ? __app_id : 'jubaopen-default-app';
 
-      // 雲端同步狀態 (預設關閉，手動啟用制)
+      // 雲端同步狀態 (預設關閉，手動啟用制，避免拋出權限錯誤)
       const [isFirebaseActive, setIsFirebaseActive] = useState(false);
       const [firebaseUser, setFirebaseUser] = useState(null);
       const [cloudSyncStatus, setCloudSyncStatus] = useState('local'); // local | syncing | synced | error
@@ -192,6 +194,7 @@
 
       const [isEditingGoal, setIsEditingGoal] = useState(false);
       const [tempGoal, setTempGoal] = useState('');
+      
       const [editingPosition, setEditingPosition] = useState(null);
       const [showEditPositionModal, setShowEditPositionModal] = useState(false);
       const [editPosShares, setEditPosShares] = useState('');
@@ -317,6 +320,7 @@
               throw new Error("此檔案不是合法的聚寶盆備份格式！");
             }
 
+            // 安全鎖定
             setIsUserFetched(false);
 
             setAccounts(parsedData.accounts || []);
@@ -734,7 +738,11 @@
           if (!txPrice) {
             setTxPrice(res.price);
           }
-          if (res.shortName && !txStockName) setTxStockName(res.shortName);
+          // ✨ 關鍵修正：只有當 txStockName (股票名稱) 是「空值」時，才幫忙帶入。
+          // 如果使用者已經打了「台積電」，這行就不會執行，絕對不覆寫！
+          if (res.shortName && !txStockName.trim()) {
+            setTxStockName(res.shortName);
+          }
           triggerNotification(`🔍 獲取即時市價成功: ${res.price}`);
         } else {
           triggerNotification('無法獲取即時報價，請手動確認或輸入', 'error');
@@ -1399,7 +1407,7 @@ service cloud.firestore {
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center text-xs text-slate-400 py-6">目前尚無資產數據以繪製分配圖。</div>
+                  <div className="text-center text-xs text-slate-400 py-6">目前無資產資料以繪製圖表。</div>
                 )}
               </div>
             </section>
@@ -1781,23 +1789,23 @@ service cloud.firestore {
                           <div className="flex flex-col sm:flex-row gap-2">
                             <div className="flex-1">
                               <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">交易股數 (股)</label>
-                              <input type="number" placeholder="例如: 1000" required value={txShares} onChange={e => setTxShares(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none" />
+                              <input type="number" placeholder="例如: 1000" required value={txShares} onChange={e => setTxShares(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                             </div>
                             <div className="flex-1">
                               <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">每股買入單價 (實際歷史成本)</label>
-                              <input type="number" placeholder="例如: 920" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none" />
+                              <input type="number" placeholder="例如: 920" step="any" required value={txPrice} onChange={e => setTxPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                             </div>
                           </div>
                           
                           <div className="flex flex-col sm:flex-row gap-2">
                             <div className="flex-1">
                               <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">當前每股市價 (現價，預設同成本)</label>
-                              <input type="number" placeholder="點擊上方查詢現價可自動代入" step="any" value={txCurrentPrice} onChange={e => setTxCurrentPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none" />
+                              <input type="number" placeholder="點擊上方查詢現價可自動代入" step="any" value={txCurrentPrice} onChange={e => setTxCurrentPrice(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs bg-slate-50/50 focus:outline-none focus:ring-1 focus:ring-sky-200" />
                             </div>
                             {txType !== 'INVENTORY' && (
                               <div className="flex-1">
                                 <label className="text-[10px] text-slate-400 block mb-0.5 font-semibold">交易手續費</label>
-                                <input type="number" placeholder="0" value={txFee} onChange={e => setTxFee(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none" />
+                                <input type="number" placeholder="0" value={txFee} onChange={e => setTxFee(e.target.value)} className="w-full bg-white border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
                               </div>
                             )}
                           </div>
