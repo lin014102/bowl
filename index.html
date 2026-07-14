@@ -742,15 +742,22 @@
       const handleUpdateStockQuotes = async () => {
         if (positions.length === 0) return;
         setStockLoading(true);
-        triggerNotification('同步即時行情中...', 'info');
+        triggerNotification('同步實時行情與智慧修復中...', 'info');
         try {
           const updated = await Promise.all(positions.map(async (pos) => {
             const res = await fetchRealStockPrice(pos.symbol, pos.market);
-            // 修正：絕對不覆蓋使用者自訂的股票名稱 (pos.name)，只單純更新現價 (res.price)
-            return res ? { ...pos, currentPrice: res.price } : pos;
+            if (res) {
+              const isNameBroken = !pos.name || pos.name === pos.symbol || /^\d+$/.test(pos.name);
+              return { 
+                ...pos, 
+                currentPrice: res.price, 
+                name: isNameBroken ? (res.shortName || pos.name) : pos.name 
+              };
+            }
+            return pos;
           }));
           setPositions(updated);
-          triggerNotification('🔄 已成功同步最新即時市價！', 'success');
+          triggerNotification('🔄 已成功同步最新現價，並自動修復股票名稱！', 'success');
         } catch (err) {
           triggerNotification('部分股票更新失敗，請確認網路狀態', 'error');
         } finally {
