@@ -197,6 +197,7 @@
       const [editPosShares, setEditPosShares] = useState('');
       const [editPosAvgCost, setEditPosAvgCost] = useState('');
       const [editPosCurrentPrice, setEditPosCurrentPrice] = useState('');
+      const [editPosName, setEditPosName] = useState('');
 
       // 沖帳確認狀態
       const [txToDelete, setTxToDelete] = useState(null);
@@ -707,7 +708,8 @@
 
       const fetchRealStockPrice = async (symbol, market) => {
         const formattedSymbol = market === 'TW' ? `${symbol}.TW` : symbol.toUpperCase();
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d`;
+        // 強制要求 Yahoo Finance 使用台灣地區與繁體中文回傳
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d&region=TW&lang=zh-TW`;
         const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`;
         try {
           const res = await fetch(proxiedUrl);
@@ -986,6 +988,7 @@
         const sharesNum = parseFloat(editPosShares);
         const costNum = parseFloat(editPosAvgCost);
         const priceNum = parseFloat(editPosCurrentPrice);
+        const newName = editPosName.trim() || editingPosition.symbol;
 
         if (isNaN(sharesNum) || isNaN(costNum) || isNaN(priceNum) || sharesNum < 0 || costNum < 0 || priceNum < 0) {
           triggerNotification('請輸入有效的數值！', 'error');
@@ -994,6 +997,7 @@
 
         setPositions(positions.map(p => p.id === editingPosition.id ? {
           ...p,
+          name: newName,
           shares: sharesNum,
           avgCost: costNum,
           currentPrice: priceNum
@@ -1001,11 +1005,12 @@
 
         setShowEditPositionModal(false);
         setEditingPosition(null);
-        triggerNotification(`已手動更新 ${editingPosition.symbol} 持股成本與現價！📈`, 'success');
+        triggerNotification(`已手動更新 ${editingPosition.symbol} 持股資訊！📈`, 'success');
       };
 
       const handleStartEditPosition = (pos) => {
         setEditingPosition(pos);
+        setEditPosName(pos.name || pos.symbol);
         setEditPosShares(pos.shares);
         setEditPosAvgCost(pos.avgCost);
         setEditPosCurrentPrice(pos.currentPrice);
@@ -1818,14 +1823,18 @@ service cloud.firestore {
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
                 <div className="flex justify-between items-center border-b pb-2">
-                  <h3 className="text-sm font-bold text-slate-800">✏️ 編輯持股部位 (成本/數量調整)</h3>
+                  <h3 className="text-sm font-bold text-slate-800">✏️ 編輯持股部位 (名稱/成本/數量)</h3>
                   <button type="button" onClick={() => { setShowEditPositionModal(false); setEditingPosition(null); }} className="text-slate-400">✕</button>
                 </div>
                 <div className="p-3 bg-sky-50 rounded-xl text-[11px] text-sky-800 leading-relaxed mb-1">
-                  <strong>標的：{editingPosition.symbol} - {editingPosition.name}</strong><br />
-                  直接調整持股總量與每股平均買入成本。未實現損益會依據此平均成本與即時價格重新計算。
+                  <strong>標的：{editingPosition.symbol}</strong><br />
+                  您可以自由修改股票的顯示名稱，或直接調整持股總量與每股平均買入成本。
                 </div>
                 <form onSubmit={handleEditPositionSubmit} className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">自訂股票名稱</label>
+                    <input type="text" required value={editPosName} onChange={e => setEditPosName(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
+                  </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">目前總持股數 (股)</label>
                     <input type="number" required value={editPosShares} onChange={e => setEditPosShares(e.target.value)} className="w-full bg-slate-50 border rounded-xl px-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-sky-200" />
