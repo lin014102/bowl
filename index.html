@@ -58,7 +58,6 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // --- 安全存儲包裝器 (safeStorage) ---
-    // 解決沙盒環境 (Canvas) 阻擋 localStorage 導致的無聲崩潰問題
     const memoryStorage = {};
     const safeStorage = {
       getItem(key) {
@@ -272,7 +271,7 @@
       };
 
       // ----------------------------------------
-      // 本地 JSON 備份匯出功能
+      // 本地 JSON 備份匯出與還原功能
       // ----------------------------------------
       const handleExportBackup = () => {
         try {
@@ -305,9 +304,6 @@
         }
       };
 
-      // ----------------------------------------
-      // 本地 JSON 備份匯入還原功能
-      // ----------------------------------------
       const handleImportBackup = (event) => {
         const fileReader = new FileReader();
         const file = event.target.files[0];
@@ -341,7 +337,7 @@
       };
 
       // ----------------------------------------
-      // 核心初始化
+      // 核心初始化與雲端連線
       // ----------------------------------------
       useEffect(() => {
         const initSystem = async () => {
@@ -443,11 +439,11 @@
         } catch (e) {
           console.error("雲端載入失敗", e);
           if (e.message && (e.message.includes("permission") || e.code === "permission-denied")) {
-            setIsFirebaseActive(false); // 關閉出錯的雲端連線
-            setShowRulesGuideModal(true); // 顯示錯誤指南彈窗
+            setIsFirebaseActive(false);
+            setShowRulesGuideModal(true);
           }
           setCloudSyncStatus('error');
-          handleLoginLocalOffline(username); // 無縫降級載入本地資料
+          handleLoginLocalOffline(username);
         } finally {
           setIsDataLoaded(true);
         }
@@ -475,248 +471,35 @@
         setIsDataLoaded(true);
       };
 
-      const handleAuthSubmit = async (e) => {
-        e.preventDefault();
-        const username = usernameInput.trim();
-        const cleanUser = username.toLowerCase();
-        const password = passwordInput;
-        if (!username || !password) { triggerNotification('請輸入帳號與密碼', 'error'); return; }
-
-        setIsDataLoaded(false);
-        try {
-          if (isFirebaseActive && typeof firebase !== 'undefined' && firebaseUser) {
-            const db = firebase.firestore();
-            const docRef = db.doc(`artifacts/${envAppId}/users/${firebaseUser.uid}/jubaopenData/${cleanUser}`);
-            const doc = await docRef.get();
-
-            if (authMode === 'register') {
-              if (doc.exists) {
-                triggerNotification('此帳號已存在，請直接登入！', 'error');
-                setIsDataLoaded(true);
-                return;
-              }
-              
-              const newPayload = {
-                username: username,
-                password: password,
-                accounts: DEFAULT_USER_DATA.accounts,
-                positions: DEFAULT_USER_DATA.positions,
-                transactions: DEFAULT_USER_DATA.transactions,
-                savingsGoal: 2000000,
-                updatedAt: new Date().toISOString()
-              };
-              await docRef.set(newPayload);
-
-              setAccounts(DEFAULT_USER_DATA.accounts);
-              setPositions(DEFAULT_USER_DATA.positions);
-              setTransactions(DEFAULT_USER_DATA.transactions);
-              setSavingsGoal(2000000);
-              setCurrentUser({ uid: `cloud_${cleanUser}`, displayName: username });
-              safeStorage.setItem('jubaopen_remembered_user', username);
-              setIsUserFetched(true);
-              setCloudSyncStatus('synced');
-              triggerNotification('註冊完成並成功同步！🎉', 'success');
-            } else {
-              if (!doc.exists) {
-                triggerNotification('此帳號不存在，請先註冊。', 'error');
-                setIsDataLoaded(true);
-                return;
-              }
-              const data = doc.data();
-              if (data.password !== password) {
-                triggerNotification('密碼錯誤，請重新輸入！', 'error');
-                setIsDataLoaded(true);
-                return;
-              }
-
-              setAccounts(data.accounts || []);
-              setPositions(data.positions || []);
-              setTransactions(data.transactions || []);
-              setSavingsGoal(data.savingsGoal || 2000000);
-              setCurrentUser({ uid: `cloud_${cleanUser}`, displayName: username });
-              safeStorage.setItem('jubaopen_remembered_user', username);
-              setIsUserFetched(true);
-              setCloudSyncStatus('synced');
-              triggerNotification('登入雲端成功！資產已載入 🌸', 'success');
-            }
-          } else {
-            // 本地離線模式
-            const localUsers = JSON.parse(safeStorage.getItem('jubaopen_local_users') || '{}');
-            if (authMode === 'register') {
-              if (localUsers[cleanUser]) {
-                triggerNotification('本地已存在此帳號，請直接登入！', 'error');
-                setIsDataLoaded(true);
-                return;
-              }
-              localUsers[cleanUser] = password;
-              safeStorage.setItem('jubaopen_local_users', JSON.stringify(localUsers));
-
-              const newPayload = {
-                accounts: DEFAULT_USER_DATA.accounts,
-                positions: DEFAULT_USER_DATA.positions,
-                transactions: DEFAULT_USER_DATA.transactions,
-                savingsGoal: 2000000
-              };
-              safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(newPayload));
-
-              setAccounts(DEFAULT_USER_DATA.accounts);
-              setPositions(DEFAULT_USER_DATA.positions);
-              setTransactions(DEFAULT_USER_DATA.transactions);
-              setSavingsGoal(2000000);
-              setCurrentUser({ uid: `local_${cleanUser}`, displayName: username });
-              safeStorage.setItem('jubaopen_remembered_user', username);
-              setIsUserFetched(true);
-              triggerNotification('本地帳號註冊成功！', 'success');
-            } else {
-              if (localUsers[cleanUser] !== password) {
-                triggerNotification('本地帳號或密碼錯誤！', 'error');
-                setIsDataLoaded(true);
-                return;
-              }
-              handleLoginLocalOffline(username);
-              safeStorage.setItem('jubaopen_remembered_user', username);
-              triggerNotification('登入本地成功！', 'success');
-            }
-          }
-        } catch (error) {
-          console.error("驗證與拉取錯誤", error);
-          if (error.message && (error.message.includes("permission") || error.code === "permission-denied")) {
-            setIsFirebaseActive(false); // 停止錯誤連線
-            setCloudSyncStatus('local');
-            handleLoginLocalOffline(usernameInput); // 自動降級到本機模式，保證能進畫面
-            setShowRulesGuideModal(true); // 顯示引導視窗
-            triggerNotification('權限被拒絕，已自動為您切換至安全的本機模式！', 'error');
-          } else {
-            triggerNotification('連線出錯：' + error.message, 'error');
-          }
-        } finally {
-          setIsDataLoaded(true);
-        }
-      };
-
-      const handleLogout = () => {
-        setCurrentUser(null);
-        setIsUserFetched(false);
-        safeStorage.removeItem('jubaopen_remembered_user');
-        setUsernameInput('');
-        setPasswordInput('');
-        setAccounts([]);
-        setPositions([]);
-        setTransactions([]);
-        setIsDataLoaded(true);
-        triggerNotification('已退出並鎖定聚寶盆 🔒', 'success');
-      };
-
-      const handleSaveSettings = async (e) => {
-        e.preventDefault();
-        const val = firebaseConfigInput.trim();
-        if (!val) {
-          safeStorage.removeItem('jubaopen_firebase_config');
-          setIsFirebaseActive(false);
-          setShowSettingsModal(false);
-          triggerNotification('已清除自訂設定，回歸本地快照模式', 'success');
-          handleLocalFallback();
-          return;
-        }
-        try {
-          const config = parseFirebaseConfig(val);
-          safeStorage.setItem('jubaopen_firebase_config', JSON.stringify(config));
-          if (typeof firebase !== 'undefined') {
-            if (firebase.apps.length > 0) {
-              await Promise.all(firebase.apps.map(app => app.delete()));
-            }
-            firebase.initializeApp(config);
-            setIsFirebaseActive(true);
-            setCloudSyncStatus('syncing');
-            const cred = await firebase.auth().signInAnonymously();
-            setFirebaseUser(cred.user);
-          }
-          setShowSettingsModal(false);
-          triggerNotification('自訂金鑰綁定成功，立即進行同步！☁️', 'success');
-          if (currentUser) {
-            await handleAutoLoginCloud(currentUser.displayName);
-          }
-        } catch (err) {
-          triggerNotification('金鑰格式有誤：' + err.message, 'error');
-        }
-      };
-
       // ----------------------------------------
-      // 自動背景同步
+      // 智慧多通道美/台股（含上市與上櫃偵測）
       // ----------------------------------------
-      useEffect(() => {
-        if (!isDataLoaded || !currentUser || !isUserFetched) return;
-        if (isWritingRef.current) return;
-
-        const syncData = async () => {
-          isWritingRef.current = true;
-          const cleanUser = currentUser.displayName.toLowerCase();
-
-          if (isFirebaseActive && typeof firebase !== 'undefined' && firebaseUser) {
-            setCloudSyncStatus('syncing');
-            try {
-              const db = firebase.firestore();
-              const docRef = db.doc(`artifacts/${envAppId}/users/${firebaseUser.uid}/jubaopenData/${cleanUser}`);
-              
-              await docRef.set({
-                accounts: accounts,
-                positions: positions,
-                transactions: transactions,
-                savingsGoal: savingsGoal,
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
-              
-              setCloudSyncStatus('synced');
-            } catch (err) {
-              console.error("自動雲端備份失敗：", err);
-              setCloudSyncStatus('error');
-              if (err.message && (err.message.includes("permission") || err.code === "permission-denied")) {
-                setIsFirebaseActive(false); // 停止無效連線
-                setShowRulesGuideModal(true);
-              }
-              // 本地同步防丟失
-              const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
-              safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(userPayload));
-            }
-          } else {
-            const userPayload = { accounts, positions, transactions, savingsGoal, updatedAt: new Date().toISOString() };
-            safeStorage.setItem(`jubaopen_user_data_${cleanUser}`, JSON.stringify(userPayload));
-            setCloudSyncStatus('local');
-          }
-          isWritingRef.current = false;
-        };
-
-        const delayDebounce = setTimeout(syncData, 500);
-        return () => clearTimeout(delayDebounce);
-      }, [accounts, positions, transactions, savingsGoal, isDataLoaded, currentUser, isUserFetched, isFirebaseActive, firebaseUser, envAppId]);
-
-      // ----------------------------------------
-      // 匯率與行情同步
-      // ----------------------------------------
-      const fetchLiveRates = async () => {
-        try {
-          const res = await fetch("https://open.er-api.com/v6/latest/TWD");
-          const data = await res.json();
-          if (data && data.rates) {
-            setRates({
-              TWD: 1.0,
-              USD: parseFloat((1 / data.rates.USD).toFixed(4)),
-              JPY: parseFloat((1 / data.rates.JPY).toFixed(4)),
-              EUR: parseFloat((1 / data.rates.EUR).toFixed(4)),
-            });
-          }
-        } catch (err) {
-          setRates(FALLBACK_RATES);
-        }
-      };
-
       const fetchRealStockPrice = async (symbol, market) => {
         let cleanSymbol = symbol.trim().toUpperCase();
-        // 防呆：去除多餘結尾，避免 user 自行輸入了 .TW 造成 .TW.TW 重複
-        if (market === 'TW' && cleanSymbol.endsWith('.TW')) {
+        // 防呆防重複：去除多餘結尾
+        if (cleanSymbol.endsWith('.TW')) {
           cleanSymbol = cleanSymbol.slice(0, -3);
+        } else if (cleanSymbol.endsWith('.TWO')) {
+          cleanSymbol = cleanSymbol.slice(0, -4);
         }
-        const formattedSymbol = market === 'TW' ? `${cleanSymbol}.TW` : cleanSymbol;
+
+        if (market !== 'TW') {
+          return await fetchSingleYahooPrice(cleanSymbol);
+        }
+
+        // 台股有兩種：上市 (.TW) 與 上櫃 (.TWO)
+        // 1. 先嘗試上市 (.TW)，例如：台積電 2330
+        let res = await fetchSingleYahooPrice(`${cleanSymbol}.TW`);
+        if (res && res.price) {
+          return res;
+        }
+
+        // 2. 失敗則嘗試上櫃 (.TWO)，例如：晟德 4123, 漢磊 3707
+        res = await fetchSingleYahooPrice(`${cleanSymbol}.TWO`);
+        return res;
+      };
+
+      const fetchSingleYahooPrice = async (formattedSymbol) => {
         const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d&region=TW&lang=zh-TW`;
         
         // 內建三組全球最大 CORS 免費中轉備份通道，隨時切換防卡死
@@ -730,12 +513,12 @@
           try {
             const proxiedUrl = proxies[i](yahooUrl);
             const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 6000); // 6秒連線超時，防止轉圈圈無限卡死
+            const id = setTimeout(() => controller.abort(), 6000); // 6秒連線超時
             
             const res = await fetch(proxiedUrl, { signal: controller.signal });
             clearTimeout(id);
             
-            if (!res.ok) continue; // 如果該通道失效，輪詢至下一條通道
+            if (!res.ok) continue; // 失敗，繼續輪詢下一條通道
             
             const data = await res.json();
             const meta = data.chart?.result?.[0]?.meta;
@@ -746,14 +529,14 @@
               };
             }
           } catch (err) {
-            console.warn(`[聚寶備份通道 ${i+1}] 查詢失敗，正在嘗試下一組通道...`, err);
+            console.warn(`[聚寶備份通道 ${i+1}] 查詢失敗 (${formattedSymbol})`, err);
           }
         }
         return null;
       };
 
       const handleQueryStockPrice = async () => {
-        if (!txSymbol.trim()) { triggerNotification('請先輸入標對代號', 'error'); return; }
+        if (!txSymbol.trim()) { triggerNotification('請先輸入標的代號', 'error'); return; }
         setQueryLoading(true);
         const res = await fetchRealStockPrice(txSymbol.trim(), txMarket);
         setQueryLoading(false);
@@ -762,20 +545,20 @@
           if (!txPrice) {
             setTxPrice(res.price);
           }
-          // ✨ 關鍵修正：只有當 txStockName (股票名稱) 是「空值」時，才幫忙帶入。
+          // 智慧安全鎖：僅在股票名稱為空白時帶入，避免蓋掉使用者辛苦打的字
           if (res.shortName && !txStockName.trim()) {
             setTxStockName(res.shortName);
           }
-          triggerNotification(`🔍 成功透過智慧通道獲取即時市價: ${res.price}`);
+          triggerNotification(`🔍 成功獲取即時市價: ${res.price}`);
         } else {
-          triggerNotification('無法獲取即時報價，中轉站忙碌中，請手動確認或稍後再試！', 'error');
+          triggerNotification('無法獲取即時報價，請手動輸入或稍後再試。', 'error');
         }
       };
 
       const handleUpdateStockQuotes = async () => {
         if (positions.length === 0) return;
         setStockLoading(true);
-        triggerNotification('同步實時行情與智慧修復中...', 'info');
+        triggerNotification('同步實時行情與智慧上櫃/上市修復中...', 'info');
         try {
           const updated = await Promise.all(positions.map(async (pos) => {
             const res = await fetchRealStockPrice(pos.symbol, pos.market);
@@ -872,7 +655,6 @@
 
         // 沖帳：進行交易的反向操作
         if (tx.type === 'DEPOSIT') {
-          // 沖帳存入：減少目標帳戶資金
           updatedAccounts = updatedAccounts.map(a => {
             if (a.id === tx.toAccount) {
               return { ...a, balance: a.balance - tx.amount };
@@ -880,7 +662,6 @@
             return a;
           });
         } else if (tx.type === 'TRANSFER') {
-          // 沖帳轉帳：把錢從目標帳戶還原回來源帳戶
           updatedAccounts = updatedAccounts.map(a => {
             if (a.id === tx.fromAccount) {
               return { ...a, balance: a.balance + tx.amount };
@@ -892,7 +673,6 @@
             return a;
           });
         } else if (tx.type === 'DIVIDEND') {
-          // 沖帳股息：扣回股息存款
           updatedAccounts = updatedAccounts.map(a => {
             if (a.id === tx.toAccount) {
               return { ...a, balance: a.balance - tx.amount };
@@ -900,7 +680,6 @@
             return a;
           });
         } else if (tx.type === 'INVENTORY') {
-          // 沖帳庫存：扣除持股，不影響資金
           const posIdx = updatedPositions.findIndex(p => p.accountId === tx.toAccount && p.symbol === tx.symbol);
           if (posIdx > -1) {
             const p = updatedPositions[posIdx];
@@ -918,7 +697,6 @@
             }
           }
         } else if (tx.type === 'BUY') {
-          // 沖帳買入：退回交割款 (買入扣款包含手續費) 到來源交割戶，並減去股數
           updatedAccounts = updatedAccounts.map(a => {
             if (a.id === tx.fromAccount) {
               return { ...a, balance: a.balance + tx.amount };
@@ -943,7 +721,6 @@
             }
           }
         } else if (tx.type === 'SELL') {
-          // 沖帳賣出：從收款交割戶中扣回售得資金，並加回持股
           updatedAccounts = updatedAccounts.map(a => {
             if (a.id === tx.toAccount) {
               return { ...a, balance: a.balance - tx.amount };
@@ -959,7 +736,6 @@
               shares: p.shares + tx.shares
             };
           } else {
-            // 已清空的部位重新建回
             updatedPositions.push({
               id: 'pos-' + Date.now(),
               accountId: tx.toAccount,
@@ -1366,6 +1142,7 @@ service cloud.firestore {
           </header>
 
           <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col lg:flex-row gap-8">
+            {}
             <section className="w-full lg:w-[410px] shrink-0 space-y-6">
               
               <div className="relative overflow-hidden bg-gradient-to-br from-[#e0f2fe] to-[#e0f2fe]/40 border border-sky-100/60 rounded-[30px] p-6 text-slate-800 shadow-sm shadow-sky-100/30">
@@ -1457,6 +1234,7 @@ service cloud.firestore {
                 </div>
               )}
 
+              {}
               {activeTab === 'accounts' && (
                 <div className="space-y-4 animate-fade-in">
                   <div className="flex justify-between items-center">
@@ -1494,6 +1272,7 @@ service cloud.firestore {
                 </div>
               )}
 
+              {}
               {activeTab === 'positions' && (
                 <div className="space-y-4 animate-fade-in">
                   <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
@@ -1510,7 +1289,8 @@ service cloud.firestore {
 
                   {/* 美股引導提示卡 */}
                   <div className="p-3.5 bg-sky-50/50 border border-sky-100 rounded-2xl text-[11px] text-sky-900/80 leading-relaxed">
-                    💡 <strong>美股資產新增技巧：</strong>點選「登錄交易/庫存」將市場選為 <strong>美股</strong>（此時代號可輸入如 <code>AAPL</code>、<code>TSLA</code> 等，點選「查詢現價」便可依美元價格登錄，扣款也會自您的美金交割戶中扣除）。
+                    💡 <strong>美股/上櫃股票技巧：</strong>
+                    本系統現已支援<strong>「自動分流」</strong>！您可以放心地新增上櫃股票（例如 <code>4123</code> 晟德、<code>3707</code> 漢磊），點擊更新現價將會自動帶入正確的中文名稱與市價！
                   </div>
 
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
@@ -1591,6 +1371,7 @@ service cloud.firestore {
             </section>
           </main>
 
+          {}
           {/* 彈窗：資料保險箱備份管理 */}
           {showBackupModal && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
@@ -1704,7 +1485,7 @@ service cloud.firestore {
           {/* 彈窗：交易沖帳確認彈窗 */}
           {txToDelete && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-sm w-full p-6 space-y-4 shadow-xl border border-slate-100 animate-fade-in">
+              <div className="bg-white rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-xl border border-slate-100 animate-fade-in">
                 <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
                   <span>⚠️</span><span>交易紀錄與自動沖帳確認</span>
                 </h3>
@@ -1802,10 +1583,9 @@ service cloud.firestore {
                         </div>
                       </div>
                       <div className="flex flex-col sm:flex-row gap-2">
-                        <input type="text" placeholder="代號如 2330" required={txType !== 'DIVIDEND'} value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-sky-200" />
-                        <input type="text" placeholder="股票名稱" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-sky-200" />
+                        <input type="text" placeholder="代號如 2330 或 4123" required={txType !== 'DIVIDEND'} value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
+                        <input type="text" placeholder="股票名稱 (選填)" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
                         
-                        {}
                         <button 
                           type="button" 
                           onClick={handleQueryStockPrice} 
