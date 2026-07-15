@@ -711,21 +711,45 @@
       };
 
       const fetchRealStockPrice = async (symbol, market) => {
-        const formattedSymbol = market === 'TW' ? `${symbol}.TW` : symbol.toUpperCase();
-        // 強制要求 Yahoo Finance 使用台灣地區與繁體中文回傳
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d&region=TW&lang=zh-TW`;
-        const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`;
-        try {
-          const res = await fetch(proxiedUrl);
-          const data = await res.json();
-          const meta = data.chart?.result?.[0]?.meta;
-          if (meta && meta.regularMarketPrice) {
-            return { price: parseFloat(meta.regularMarketPrice.toFixed(2)), shortName: meta.shortName || '' };
-          }
-          return null;
-        } catch (err) {
-          return null;
+        let cleanSymbol = symbol.trim().toUpperCase();
+        // 防呆：去除多餘結尾，避免 user 自行輸入了 .TW 造成 .TW.TW 重複
+        if (market === 'TW' && cleanSymbol.endsWith('.TW')) {
+          cleanSymbol = cleanSymbol.slice(0, -3);
         }
+        const formattedSymbol = market === 'TW' ? `${cleanSymbol}.TW` : cleanSymbol;
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${formattedSymbol}?interval=1d&range=1d&region=TW&lang=zh-TW`;
+        
+        // 內建三組全球最大 CORS 免費中轉備份通道，隨時切換防卡死
+        const proxies = [
+          (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+          (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+          (url) => `https://thingproxy.freeboard.io/fetch/${url}`
+        ];
+
+        for (let i = 0; i < proxies.length; i++) {
+          try {
+            const proxiedUrl = proxies[i](yahooUrl);
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), 6000); // 6秒連線超時，防止轉圈圈無限卡死
+            
+            const res = await fetch(proxiedUrl, { signal: controller.signal });
+            clearTimeout(id);
+            
+            if (!res.ok) continue; // 如果該通道失效，輪詢至下一條通道
+            
+            const data = await res.json();
+            const meta = data.chart?.result?.[0]?.meta;
+            if (meta && meta.regularMarketPrice !== undefined) {
+              return { 
+                price: parseFloat(meta.regularMarketPrice.toFixed(2)), 
+                shortName: meta.shortName || '' 
+              };
+            }
+          } catch (err) {
+            console.warn(`[聚寶備份通道 ${i+1}] 查詢失敗，正在嘗試下一組通道...`, err);
+          }
+        }
+        return null;
       };
 
       const handleQueryStockPrice = async () => {
@@ -739,13 +763,12 @@
             setTxPrice(res.price);
           }
           // ✨ 關鍵修正：只有當 txStockName (股票名稱) 是「空值」時，才幫忙帶入。
-          // 如果使用者已經打了「台積電」，這行就不會執行，絕對不覆寫！
           if (res.shortName && !txStockName.trim()) {
             setTxStockName(res.shortName);
           }
-          triggerNotification(`🔍 獲取即時市價成功: ${res.price}`);
+          triggerNotification(`🔍 成功透過智慧通道獲取即時市價: ${res.price}`);
         } else {
-          triggerNotification('無法獲取即時報價，請手動確認或輸入', 'error');
+          triggerNotification('無法獲取即時報價，中轉站忙碌中，請手動確認或稍後再試！', 'error');
         }
       };
 
@@ -1681,7 +1704,7 @@ service cloud.firestore {
           {/* 彈窗：交易沖帳確認彈窗 */}
           {txToDelete && (
             <div className="fixed inset-0 bg-slate-950/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-xl border border-slate-100 animate-fade-in">
+              <div className="bg-white rounded-3xl max-sm w-full p-6 space-y-4 shadow-xl border border-slate-100 animate-fade-in">
                 <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
                   <span>⚠️</span><span>交易紀錄與自動沖帳確認</span>
                 </h3>
@@ -1779,9 +1802,25 @@ service cloud.firestore {
                         </div>
                       </div>
                       <div className="flex flex-col sm:flex-row gap-2">
-                        <input type="text" placeholder="代號如 2330" required={txType !== 'DIVIDEND'} value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
-                        <input type="text" placeholder="股票名稱" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs" />
-                        <button type="button" onClick={handleQueryStockPrice} className="w-full sm:w-1/3 bg-sky-200 text-sky-900 font-bold rounded-lg text-xs hover:bg-sky-300 py-2">查詢現價</button>
+                        <input type="text" placeholder="代號如 2330" required={txType !== 'DIVIDEND'} value={txSymbol} onChange={e => setTxSymbol(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-sky-200" />
+                        <input type="text" placeholder="股票名稱" value={txStockName} onChange={e => setTxStockName(e.target.value)} className="w-full sm:w-1/3 bg-white border rounded-lg px-3 py-2 text-xs focus:ring-1 focus:ring-sky-200" />
+                        
+                        {}
+                        <button 
+                          type="button" 
+                          onClick={handleQueryStockPrice} 
+                          disabled={queryLoading}
+                          className={`w-full sm:w-1/3 font-bold rounded-lg text-xs py-2 transition-all flex items-center justify-center gap-1 ${queryLoading ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-sky-200 hover:bg-sky-300 text-sky-900'}`}
+                        >
+                          {queryLoading ? (
+                            <>
+                              <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-sky-600 rounded-full animate-spin"></span>
+                              <span>查詢中...</span>
+                            </>
+                          ) : (
+                            <span>查詢現價</span>
+                          )}
+                        </button>
                       </div>
                       
                       {txType !== 'DIVIDEND' && (
